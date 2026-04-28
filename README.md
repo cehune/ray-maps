@@ -1,1 +1,1 @@
-# ray-maps-gi-impl
+# Ray Maps for Global Illumination with Segments
