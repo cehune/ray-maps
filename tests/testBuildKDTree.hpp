@@ -124,6 +124,59 @@ void testDepthLimit() {
     assert_true(true, "Tree built without infinite recursion");
 }
 
+void testMetricA_ValidHit() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,-1}; // facing the ray
+
+    float result = tree.metricA(ray, x, n);
+
+    // Should hit exactly at x → distance = 0
+    assert_true(std::abs(result) < 1e-6f,
+                "MetricA should be zero for perfect intersection");
+}
+
+void testMetricA_ParallelRay() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {1,0,0}, 0.0f, 10.0f, 0.0f};
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,1}; // perpendicular to ray
+
+    float result = tree.metricA(ray, x, n);
+
+    assert_true(result == FLT_MAX,
+                "Parallel ray should return FLT_MAX");
+}
+
+void testMetricA_WrongHemisphere() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,1}; // same direction → rejected
+
+    float result = tree.metricA(ray, x, n);
+
+    assert_true(result == FLT_MAX,
+                "Ray in wrong hemisphere should be rejected");
+}
+
+void testMetricA_OutOfBoundsT() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 2.0f, 0.0f};
+    Vec3 x{0,0,5};  // beyond t_max
+    Vec3 n{0,0,-1};
+
+    float result = tree.metricA(ray, x, n);
+
+    assert_true(result == FLT_MAX,
+                "Intersection outside t range should be rejected");
+}
+
 int testBuildKDTree() {
     testDepthLimit();
     testLeafConditionSmallInput();

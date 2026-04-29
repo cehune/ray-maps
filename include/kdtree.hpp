@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <float.h>
 
 struct KdNode {
     AABB bounds;
@@ -42,6 +43,13 @@ public:
     void validate(int nodeIdx) const;
     // TODO: Add the actual KNN logic
 
+    // metric II.(a): distance from x to ray's tangent plane intersection
+    // returns squared distance, or FLT_MAX if ray doesn't pierce hemisphere
+    float metricA(const Ray& ray, const Vec3& x, const Vec3& n) const;
+
+    // metric II.(b): squared distance from x to closest point on segment
+    float metricB(const Ray& ray, const Vec3& x) const;
+
 private:
     std::vector<KdNode> _nodes;
     const std::vector<Ray>* _rays = nullptr;
@@ -50,11 +58,4 @@ private:
     int buildRecursive(
         int nodeIndex, std::vector<int>& rayIndices, int depth
     );
-
-    // metric II.(a): distance from x to ray's tangent plane intersection
-    // returns squared distance, or FLT_MAX if ray doesn't pierce hemisphere
-    float metricA(const Ray& ray, const Vec3& x, const Vec3& n) const;
-
-    // metric II.(b): squared distance from x to closest point on segment
-    float metricB(const Ray& ray, const Vec3& x) const;
 };

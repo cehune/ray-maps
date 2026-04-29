@@ -99,6 +99,41 @@ int KdTree::buildRecursive(int nodeIndex, std::vector<int>& rayIndices, int dept
         return nodeIndex;
 }
 
+float KdTree::metricA(const Ray& ray, const Vec3& x, const Vec3& n) const {
+    // x is the point, n is the plane normal, ray is our onset ray
+    // recall that normal gives equation for a plane
+    // n.a(x - xo) + n.b(y-yo) + n.c(z-zo) = 0, where xo, yo, zo are from ray origin + t dir
+    // so t is the only unknown, we can directly find the unknwon vector
+    
+    float planeDir = ray.dir.dot(n);
+
+    // Ray parallel to tangent plane — never pierces disc
+    if (std::abs(planeDir) < 1e-6f) return FLT_MAX;
+
+    // Only consider rays coming from the correct hemisphere
+    // (incoming rays have dir.dot(n) < 0 for a surface normal pointing up)
+    if (planeDir >= 0.f) return FLT_MAX;
+    
+    float planeSurfacePoint = (x - ray.origin).dot(n);
+    float t = planeSurfacePoint / planeDir;
+
+    // Intersection must be within the segment's extent
+    if (t < ray.t_min || t > ray.t_max) return FLT_MAX;
+    
+    Vec3 dist = x - (ray.origin + ray.dir * t);
+    return dist.norm2();
+}
+
+float KdTree::metricB(const Ray& ray, const Vec3& x) const {
+    Vec3 originToSurface = x - ray.origin;
+    // projection gives closest point - from there it is perpindicular to the target point
+    float t = originToSurface.dot(ray.dir);
+    t = std::max(ray.t_min, std::min(ray.t_max, t)); // clamp in bounds
+
+    Vec3 dist = x - (ray.origin + ray.dir * t);
+    return dist.norm2();
+}
+
 void KdTree::print(int nodeIdx, int depth) const {
     if (nodeIdx < 0 || nodeIdx >= (int)_nodes.size()) {
         printf("%*s[INVALID NODE %d]\n", depth*2, "", nodeIdx);
