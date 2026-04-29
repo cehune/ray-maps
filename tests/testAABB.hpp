@@ -133,5 +133,5 @@ void testAABB() {
     testSquareDistToPointInside();
     testSquareDistToPointOutside();
 
-    std::cout << "All AABB tests passed! ^-^";
+    std::cout << "All AABB tests passed! ^-^\n";
 }

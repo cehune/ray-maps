@@ -14,7 +14,6 @@ endif()
 add_library(core
     src/aabb.cpp
     src/kdtree.cpp
-    src/ray.hpp  
 )
 
 target_include_directories(core PUBLIC include)

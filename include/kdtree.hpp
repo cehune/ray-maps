@@ -5,6 +5,8 @@
 #include <memory>
 #include <queue>
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 struct KdNode {
     AABB bounds;
@@ -35,7 +37,9 @@ public:
     static constexpr float R_MIN_FRAC = 0.001f; // min spacial extent aabb for a node
 
     void build(const std::vector<Ray>& rays, const AABB& sceneBounds);
-
+    std::vector<KdNode>& nodes() { return _nodes; }
+    void print(int nodeIdx, int depth) const;
+    void validate(int nodeIdx) const;
     // TODO: Add the actual KNN logic
 
 private:
