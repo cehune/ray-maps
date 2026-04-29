@@ -128,6 +128,23 @@ float KdTree::metricA(const Ray& ray, const Vec3& x, const Vec3& n) const {
     return dist.norm2();
 }
 
+
+// returns nullopt if ray misses hemisphere or disc
+std::optional<DiscIntersection> KdTree::metricAFull(const Ray& ray, const Vec3& x, 
+    const Vec3& n) const {
+        // same logic as metric a but returning the point as well.
+    float planeDir = ray.dir.dot(n);
+    if (std::abs(planeDir) < 1e-6f) return std::nullopt;
+    if (planeDir >= 0.f)            return std::nullopt;
+    
+    float t = (x - ray.origin).dot(n) / planeDir;
+    if (t < ray.t_min || t > ray.t_max) return std::nullopt;
+
+    Vec3 point = ray.origin + ray.dir * t;
+    float dist2 = (x - point).norm2();
+    return DiscIntersection{dist2, point};
+}
+
 float KdTree::metricB(const Ray& ray, const Vec3& x) const {
     Vec3 originToSurface = x - ray.origin;
     // projection gives closest point - from there it is perpindicular to the target point

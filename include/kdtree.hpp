@@ -10,6 +10,7 @@
 #include <float.h>
 #include <unordered_set>
 #include <queue>
+#include <optional>
 
 struct KdNode {
     AABB bounds;
@@ -44,6 +45,12 @@ struct NodeEntry {
     }
 };
 
+struct DiscIntersection {
+    // distance on a point to the x target on the surface
+    float dist2;
+    Vec3 point; 
+};
+
 
 class KdTree {
 public:
@@ -62,10 +69,15 @@ public:
     // returns squared distance, or FLT_MAX if ray doesn't pierce hemisphere
     float metricA(const Ray& ray, const Vec3& x, const Vec3& n) const;
 
+    std::optional<DiscIntersection> metricAFull(const Ray& ray, const Vec3& x, const Vec3& n) const;
+
+
     // metric II.(b): squared distance from x to closest point on segment
     float metricB(const Ray& ray, const Vec3& x) const;
 
     std::vector<RayCandidate> knn(const Vec3& x, const Vec3& n, int K, float maxDist) const;
+    
+    const Ray& ray(int index) const {return (*_rays)[index]; }
 
 private:
     std::vector<KdNode> _nodes;
