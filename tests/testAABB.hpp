@@ -120,7 +120,7 @@ void testGrazesTopFace() {
     assert(hit); // grazing top face
 }
 
-void testAABB() {
+void runAABBTests() {
     testCenteredRayHitsBoundingBox();
     testCentroid();
     testGrazesTopFace();

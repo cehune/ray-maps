@@ -1,7 +1,6 @@
 #pragma once
 #include "kdtree.hpp"
 #include "helpers.hpp"
-#include <iostream>
 
 void testBuildBasic() {
     AABB bounds{{0,0,0}, {1,1,1}};
@@ -326,7 +325,7 @@ void testKNNDuplicateDistances() {
                 "Should handle duplicate distances correctly");
 }
 
-int testBuildKDTree() {
+int runKdTreeTests() {
     testDepthLimit();
     testLeafConditionSmallInput();
     testRayDuplicationOverBothSplits();

@@ -1,7 +1,9 @@
 #include "testAABB.hpp"
 #include "testBuildKDTree.hpp"
+#include "testEstimator.hpp"
 
 int main() {
-    testAABB();
-    testBuildKDTree();
+    runAABBTests();
+    runKdTreeTests();
+    runEstimatorTests();
 }
