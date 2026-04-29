@@ -3,6 +3,7 @@
 #include <array>
 
 class Vec3 {
+public:
     float x, y, z;
 
     Vec3(float x, float y, float z): x(x), y(y), z(z) {}
@@ -10,6 +11,9 @@ class Vec3 {
     Vec3 operator+(const Vec3& o) const { return {x+o.x, y+o.y, z+o.z}; }
     Vec3 operator-(const Vec3& o) const { return {x-o.x, y-o.y, z-o.z}; }
     Vec3 operator*(float t) const { return {x*t, y*t, z*t}; }
+
+    float operator[](int i) const { return (&x)[i]; }
+    float& operator[](int i) { return (&x)[i]; }
 
     float dot (const Vec3& o) const { return x*o.x + y*o.y + z+o.z; }
     float norm2() const {return dot(*this); }
