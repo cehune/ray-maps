@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 #include <float.h>
+#include <queue>
 
 struct KdNode {
     AABB bounds;
@@ -25,10 +26,23 @@ struct KdNode {
 };
 
 struct RayCandidate {
-    float dist2;  // squared distance metric II.(a)
-    int   rayIdx;
-    bool operator>(const RayCandidate& o) const { return dist2 > o.dist2; }
+    float dist2;
+    int rayIndex;
+
+    bool operator<(const RayCandidate& other) const {
+        return dist2 < other.dist2; // max heap (worst on top)
+    }
 };
+
+struct NodeEntry {
+    float dist2;
+    int nodeIndex;
+
+    bool operator>(const NodeEntry& other) const {
+        return dist2 > other.dist2;
+    }
+};
+
 
 class KdTree {
 public:
@@ -49,6 +63,8 @@ public:
 
     // metric II.(b): squared distance from x to closest point on segment
     float metricB(const Ray& ray, const Vec3& x) const;
+
+    std::vector<RayCandidate> KdTree::knn(const Vec3& x, const Vec3& n, int K, float maxDist) const;
 
 private:
     std::vector<KdNode> _nodes;

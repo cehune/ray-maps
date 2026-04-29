@@ -177,12 +177,156 @@ void testMetricA_OutOfBoundsT() {
                 "Intersection outside t range should be rejected");
 }
 
+void testMetricB_PointOnRay() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Vec3 x{0,0,5};
+
+    float result = tree.metricB(ray, x);
+
+    assert_true(std::abs(result) < 1e-6f,
+                "MetricB should be zero for point on ray");
+}
+
+void testMetricB_PerpendicularDistance() {
+    KdTree tree;
+
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Vec3 x{1,0,5}; // 1 unit away from ray
+
+    float result = tree.metricB(ray, x);
+
+    assert_true(result > 0.9f && result < 1.1f,
+                "MetricB should be ~1 for perpendicular distance");
+}
+
+void testKNNMatchesBruteForce() {
+    AABB bounds{{0,0,0}, {10,10,10}};
+
+    std::vector<Ray> rays;
+    for (int i = 0; i < 100; ++i) {
+        rays.push_back({
+            {float(i % 10), float(i / 10), 0.f},
+            {0,0,1},
+            0.f, 20.f, 0.f
+        });
+    }
+
+    KdTree tree;
+    tree.build(rays, bounds);
+
+    Vec3 x{5,5,5};
+    Vec3 n{0,0,-1};
+
+    int K = 10;
+    float maxDist = 100.f;
+
+    auto result = tree.knn(x, n, K, maxDist);
+
+    // brute force
+    std::vector<std::pair<float,int>> brute;
+    for (int i = 0; i < (int)rays.size(); ++i) {
+        float a = tree.metricA(rays[i], x, n);
+        float b = tree.metricB(rays[i], x);
+        if (a == FLT_MAX) continue;
+
+        float d = std::max(a,b);
+        brute.push_back({d, i});
+    }
+
+    std::sort(brute.begin(), brute.end());
+    brute.resize(K);
+
+    assert_true(result.size() == brute.size(), "Same number of neighbors");
+
+    for (int i = 0; i < (int)result.size(); ++i) {
+        assert_true(std::abs(result[i].dist2 - brute[i].first) < 1e-4f,
+                    "Distances should match brute force");
+    }
+}
+
+void testKNNRespectsMaxDistance() {
+    AABB bounds{{0,0,0}, {10,10,10}};
+
+    std::vector<Ray> rays;
+    // near rays
+    for (int i = 0; i < 10; ++i)
+        rays.push_back({{0,0,float(i)}, {0,0,1}, 0.f, 10.f, 0.f});
+    // far rays
+    for (int i = 0; i < 10; ++i)
+        rays.push_back({{0,0,float(i+50)}, {0,0,1}, 0.f, 100.f, 0.f});
+
+    KdTree tree;
+    tree.build(rays, bounds);
+
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,-1};
+
+    auto result = tree.knn(x, n, 20, 5.0f);
+
+    for (auto& c : result) {
+        assert_true(c.dist2 <= 25.0f,
+                    "All results must respect maxDist");
+    }
+}
+
+void testKNNLessThanKResults() {
+    AABB bounds{{0,0,0}, {10,10,10}};
+
+    std::vector<Ray> rays(5, {{0,0,0}, {0,0,1}, 0.f, 10.f, 0.f});
+
+    KdTree tree;
+    tree.build(rays, bounds);
+
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,-1};
+
+    auto result = tree.knn(x, n, 10, 100.f);
+
+    assert_true(result.size() == 5,
+                "Should return all available rays if < K");
+}
+
+void testKNNDuplicateDistances() {
+    AABB bounds{{0,0,0}, {10,10,10}};
+
+    std::vector<Ray> rays;
+
+    // identical rays
+    for (int i = 0; i < 20; ++i)
+        rays.push_back({{0,0,0}, {0,0,1}, 0.f, 10.f, 0.f});
+
+    KdTree tree;
+    tree.build(rays, bounds);
+
+    Vec3 x{0,0,5};
+    Vec3 n{0,0,-1};
+
+    auto result = tree.knn(x, n, 10, 100.f);
+
+    assert_true(result.size() == 10,
+                "Should handle duplicate distances correctly");
+}
+
 int testBuildKDTree() {
     testDepthLimit();
     testLeafConditionSmallInput();
     testRayDuplicationOverBothSplits();
     testSplittingOccursOnLargeInput();
     testTreeIndicesValid();
+
+    testMetricA_OutOfBoundsT();
+    testMetricA_ParallelRay();
+    testMetricA_ValidHit();
+    testMetricA_WrongHemisphere();
+    testMetricB_PerpendicularDistance();
+    testMetricB_PointOnRay();
+
+    testKNNDuplicateDistances();
+    testKNNLessThanKResults();
+    testKNNMatchesBruteForce();
+    testKNNRespectsMaxDistance();
 
     std::cout << "All KD Building Tests Passed ^-^ \n";
     return 0;

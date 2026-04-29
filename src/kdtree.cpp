@@ -134,6 +134,80 @@ float KdTree::metricB(const Ray& ray, const Vec3& x) const {
     return dist.norm2();
 }
 
+std::vector<RayCandidate> KdTree::knn(const Vec3& x, const Vec3& n, int K, float maxDist) const {
+    /* x is the target point on the surface, n is the plane defined tangent to the surface on 
+    that point, K is the number of ray candidates we want, maxDist is that maximum distance away
+    they can cross the tangent plane. 
+    
+    returns a list of Ray Candidates that meet the required conditions
+    */
+
+    float maxDist2 = maxDist * maxDist;
+
+    // max heap by distance to drop furthest candidates
+    std::priority_queue<RayCandidate> candidates;
+
+    // min heap by distance, enter into the closest nodes next
+    std::priority_queue<NodeEntry,
+                    std::vector<NodeEntry>,
+                    std::greater<NodeEntry>> nodeQueue;
+
+    nodeQueue.push({0.f, 0});
+
+    while (!nodeQueue.empty()) {
+        NodeEntry nodeEntry = nodeQueue.top();
+        nodeQueue.pop();
+
+        // unified pruning radius: either maxDist or current worst candidate
+        float currentRadius2 = maxDist2;
+        if ((int)candidates.size() == K) {
+            currentRadius2 = std::min(currentRadius2, candidates.top().dist2);
+        }
+
+        // just ensure the current nodes 
+        if ((int)candidates.size() == K && (nodeEntry.dist2 > currentRadius2)) break;
+
+        const KdNode& node = _nodes[nodeEntry.nodeIndex];
+
+        if (node.isLeaf()) {
+            for (int rayIndex: node.rayIndices) {
+                const Ray& ray = (*_rays)[rayIndex];
+                float distA = metricA(ray, x, n);
+                float distB = metricB(ray, x);
+                // never pierces disc or is not in the range
+                if (distA == FLT_MAX) continue;
+
+                // conservative but gaurantees we don't lose real points on some edge cases
+                float dist2 = std::max(distA, distB);
+                if (dist2 > currentRadius2) continue; // dont include if bad
+
+                candidates.push({dist2, rayIndex});
+                if ((int)candidates.size() > K) candidates.pop(); // eliminate furthest
+            }
+        } else {
+            // check if left and right children are valid
+            if (node.leftChild >= 0) {
+                float dist2 = _nodes[node.leftChild].bounds.sqDistToPoint(x);
+                if (dist2 <= currentRadius2) nodeQueue.push({dist2, node.leftChild});
+            }
+            if (node.rightChild >= 0) {
+                float dist2 = _nodes[node.rightChild].bounds.sqDistToPoint(x);
+                if (dist2 <= currentRadius2) nodeQueue.push({dist2, node.rightChild});
+            }
+        }
+    }
+
+    std::vector<RayCandidate> result;
+    result.reserve(candidates.size());
+    while(!candidates.empty()) {
+        result.push_back(candidates.top());
+        candidates.pop();
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
+
 void KdTree::print(int nodeIdx, int depth) const {
     if (nodeIdx < 0 || nodeIdx >= (int)_nodes.size()) {
         printf("%*s[INVALID NODE %d]\n", depth*2, "", nodeIdx);
