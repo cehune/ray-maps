@@ -15,7 +15,7 @@ public:
     float operator[](int i) const { return (&x)[i]; }
     float& operator[](int i) { return (&x)[i]; }
 
-    float dot (const Vec3& o) const { return x*o.x + y*o.y + z+o.z; }
+    float dot (const Vec3& o) const { return x*o.x + y*o.y + z*o.z; }
     float norm2() const {return dot(*this); }
     float norm() const { return std::sqrt(norm2()); } // unit length
     Vec3 normalized() const { 
