@@ -3,7 +3,7 @@
 #include "testEstimator.hpp"
 
 int main() {
-    //runAABBTests();
-    //runKdTreeTests();
+    runAABBTests();
+    runKdTreeTests();
     runEstimatorTests();
 }
