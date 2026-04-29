@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 #include <float.h>
+#include <unordered_set>
 #include <queue>
 
 struct KdNode {
@@ -64,7 +65,7 @@ public:
     // metric II.(b): squared distance from x to closest point on segment
     float metricB(const Ray& ray, const Vec3& x) const;
 
-    std::vector<RayCandidate> KdTree::knn(const Vec3& x, const Vec3& n, int K, float maxDist) const;
+    std::vector<RayCandidate> knn(const Vec3& x, const Vec3& n, int K, float maxDist) const;
 
 private:
     std::vector<KdNode> _nodes;

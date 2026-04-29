@@ -1,6 +1,10 @@
 #include "kdtree.hpp"
+#include <cassert>
 
 void KdTree::build(const std::vector<Ray>& rays, const AABB& sceneBounds) {
+
+    assert(_nodes.empty() && "Tree not reset between builds");
+    assert(rays.size() > 0 && "Empty ray set");
     _rays = &rays;
 
     // get min diagonal
@@ -152,50 +156,91 @@ std::vector<RayCandidate> KdTree::knn(const Vec3& x, const Vec3& n, int K, float
                     std::vector<NodeEntry>,
                     std::greater<NodeEntry>> nodeQueue;
 
+    // had a bug where rays were evaluated twice, need to track with set
+    std::unordered_set<int> visited;
+
+
     nodeQueue.push({0.f, 0});
 
+    // printf("[knn init] K=%d maxDist=%.4f maxDist2=%.4f\n", K, maxDist, maxDist2);
+    // printf("[knn init] nodeQueue size=%zu\n", nodeQueue.size());
+    // printf("[knn init] root node isLeaf=%d rayIndices=%zu\n", 
+    //     _nodes[0].isLeaf(), _nodes[0].rayIndices.size());
+
     while (!nodeQueue.empty()) {
-        NodeEntry nodeEntry = nodeQueue.top();
+        auto [boxDist2, nodeIdx] = nodeQueue.top();
         nodeQueue.pop();
 
-        // unified pruning radius: either maxDist or current worst candidate
-        float currentRadius2 = maxDist2;
-        if ((int)candidates.size() == K) {
-            currentRadius2 = std::min(currentRadius2, candidates.top().dist2);
-        }
+        //printf("[traverse] nodeIdx=%d boxDist2=%.4f currentRadius2=%.4f candidates=%zu\n",
+        //nodeIdx, boxDist2, 
+        // ((int)candidates.size() == K) ? std::min(maxDist2, candidates.top().dist2) : maxDist2,
+        // candidates.size());
 
-        // just ensure the current nodes 
-        if ((int)candidates.size() == K && (nodeEntry.dist2 > currentRadius2)) break;
+        // recompute tightest radius fresh each iteration —
+        // candidates may have been updated since this node was pushed
+        float currentRadius2 = ((int)candidates.size() == K)
+            ? std::min(maxDist2, candidates.top().dist2)
+            : maxDist2;
 
-        const KdNode& node = _nodes[nodeEntry.nodeIndex];
+        // priority queue guarantees nodes come out in order of increasing
+        // box distance — once closest unvisited box is farther than our
+        // current K-th candidate, no future node can contain a closer ray
+        if (boxDist2 > currentRadius2) break;
+
+        const KdNode& node = _nodes[nodeIdx];
 
         if (node.isLeaf()) {
-            for (int rayIndex: node.rayIndices) {
+            for (int rayIndex : node.rayIndices) {
+                if (visited.count(rayIndex)) continue;
+                visited.insert(rayIndex);
+
                 const Ray& ray = (*_rays)[rayIndex];
+
+                // metric II.(a): squared dist from x to tangent plane intersection
                 float distA = metricA(ray, x, n);
-                float distB = metricB(ray, x);
-                // never pierces disc or is not in the range
+
+                // never pierces disc or wrong hemisphere
                 if (distA == FLT_MAX) continue;
 
-                // conservative but gaurantees we don't lose real points on some edge cases
+                // metric II.(b): squared dist from x to closest point on segment
+                float distB = metricB(ray, x);
+
+                // conservative search metric — max ensures we don't miss rays
+                // that are close in one metric but far in the other
                 float dist2 = std::max(distA, distB);
-                if (dist2 > currentRadius2) continue; // dont include if bad
+
+                // recompute radius here too — previous candidates in this
+                // same leaf may have tightened it
+                float leafRadius2 = ((int)candidates.size() == K)
+                    ? std::min(maxDist2, candidates.top().dist2)
+                    : maxDist2;
+
+                if (dist2 > leafRadius2) continue;
 
                 candidates.push({dist2, rayIndex});
-                if ((int)candidates.size() > K) candidates.pop(); // eliminate furthest
+
+                // evict the furthest candidate if we exceeded K
+                if ((int)candidates.size() > K) candidates.pop();
             }
         } else {
-            // check if left and right children are valid
+            // push children pruned against current tightest radius
             if (node.leftChild >= 0) {
-                float dist2 = _nodes[node.leftChild].bounds.sqDistToPoint(x);
-                if (dist2 <= currentRadius2) nodeQueue.push({dist2, node.leftChild});
+                float d2 = _nodes[node.leftChild].bounds.sqDistToPoint(x);
+                if (d2 <= currentRadius2) nodeQueue.push({d2, node.leftChild});
             }
             if (node.rightChild >= 0) {
-                float dist2 = _nodes[node.rightChild].bounds.sqDistToPoint(x);
-                if (dist2 <= currentRadius2) nodeQueue.push({dist2, node.rightChild});
+                float d2 = _nodes[node.rightChild].bounds.sqDistToPoint(x);
+                if (d2 <= currentRadius2) nodeQueue.push({d2, node.rightChild});
             }
         }
     }
+
+    std::priority_queue<RayCandidate> temp = candidates;
+    // printf("[knn result] candidate count=%zu\n", candidates.size());
+    // while (!temp.empty()) {
+    //     printf("  rayIdx=%d dist2=%.4f\n", temp.top().rayIndex, temp.top().dist2);
+    //     temp.pop();
+    // }
 
     std::vector<RayCandidate> result;
     result.reserve(candidates.size());
@@ -203,6 +248,7 @@ std::vector<RayCandidate> KdTree::knn(const Vec3& x, const Vec3& n, int K, float
         result.push_back(candidates.top());
         candidates.pop();
     }
+
     std::reverse(result.begin(), result.end());
     return result;
 }

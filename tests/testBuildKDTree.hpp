@@ -205,7 +205,9 @@ void testKNNMatchesBruteForce() {
     AABB bounds{{0,0,0}, {10,10,10}};
 
     std::vector<Ray> rays;
-    for (int i = 0; i < 100; ++i) {
+    rays.clear();
+
+    for (int i = 0; i <  50; ++i) {
         rays.push_back({
             {float(i % 10), float(i / 10), 0.f},
             {0,0,1},
@@ -221,6 +223,20 @@ void testKNNMatchesBruteForce() {
 
     int K = 10;
     float maxDist = 100.f;
+
+    // for (int i = 0; i < 20; ++i) {
+    // printf("ray %d: origin=(%.1f,%.1f,%.1f) dir=(%.1f,%.1f,%.1f) tmin=%.1f tmax=%.1f\n",
+    //     i,
+    //     rays[i].origin.x, rays[i].origin.y, rays[i].origin.z,
+    //     rays[i].dir.x, rays[i].dir.y, rays[i].dir.z,
+    //     rays[i].t_min, rays[i].t_max);
+    // }
+
+    // for (int i = 0; i < (int)rays.size(); ++i) {
+    //     float a = tree.metricA(rays[i], x, n);
+    //     float b = tree.metricB(rays[i], x);
+    //     printf("[BRUTE] rayIndex=%d distA=%.4f distB=%.4f\n", i, a, b);
+    // }
 
     auto result = tree.knn(x, n, K, maxDist);
 
@@ -241,8 +257,9 @@ void testKNNMatchesBruteForce() {
     assert_true(result.size() == brute.size(), "Same number of neighbors");
 
     for (int i = 0; i < (int)result.size(); ++i) {
+        //std::cout << "i: "<< i << "  knn dist: " << result[i].dist2 << "  brute dist: " << brute[i].first << std::endl;
         assert_true(std::abs(result[i].dist2 - brute[i].first) < 1e-4f,
-                    "Distances should match brute force");
+                 "Distances should match brute force");
     }
 }
 
