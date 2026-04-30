@@ -7,7 +7,7 @@
 
 void testCenteredRayHitsBoundingBox() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{-1, 0.5f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{-1, 0.5f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -18,7 +18,7 @@ void testCenteredRayHitsBoundingBox() {
 
 void testRayMisses() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{-1, 2.0f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{-1, 2.0f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -28,7 +28,7 @@ void testRayMisses() {
 
 void testParallelRayInsideSlabShouldHit() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{0.5f, 0.5f, -1}, {0, 0, 1}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{0.5f, 0.5f, -1}, {0, 0, 1}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -38,7 +38,7 @@ void testParallelRayInsideSlabShouldHit() {
 
 void testParallelRayOutsideSlabShouldMiss() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{1.5f, 0.5f, -1}, {0, 0, 1}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{1.5f, 0.5f, -1}, {0, 0, 1}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -48,7 +48,7 @@ void testParallelRayOutsideSlabShouldMiss() {
 
 void testRayInsideBoxDoesntHit() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{0.5f, 0.5f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{0.5f, 0.5f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -59,7 +59,7 @@ void testRayInsideBoxDoesntHit() {
 
 void rayPointingAwayFromBoxShouldMiss() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{-1, 0.5f, 0.5f}, {-1, 0, 0}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{-1, 0.5f, 0.5f}, {-1, 0, 0}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);
@@ -112,7 +112,7 @@ void testCentroid() {
 
 void testGrazesTopFace() {
     AABB box{{0,0,0}, {1,1,1}};
-    Ray ray{{-1, 1.0f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, 0.0f};
+    Ray ray{{-1, 1.0f, 0.5f}, {1, 0, 0}, 0.0f, FLT_MAX, {0.0f, 0.0f, 0.0f}};
 
     float t0, t1;
     bool hit = box.intersect(ray, t0, t1);

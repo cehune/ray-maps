@@ -6,8 +6,8 @@ void testBuildBasic() {
     AABB bounds{{0,0,0}, {1,1,1}};
 
     std::vector<Ray> rays = {
-        {{-1,0.5f,0.5f}, {1,0,0}, 0.0f, 10.0f, 0.0f},
-        {{0.5f,-1,0.5f}, {0,1,0}, 0.0f, 10.0f, 0.0f}
+        {{-1,0.5f,0.5f}, {1,0,0}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}},
+        {{0.5f,-1,0.5f}, {0,1,0}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}}
     };
 
     KdTree tree;
@@ -25,7 +25,7 @@ void testLeafConditionSmallInput() {
 
     std::vector<Ray> rays;
     for (int i = 0; i < 10; ++i) { // < C_MIN (32)
-        rays.push_back({{0,0,0}, {1,0,0}, 0.0f, 10.0f, 0.0f});
+        rays.push_back({{0,0,0}, {1,0,0}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}});
     }
 
     KdTree tree;
@@ -42,7 +42,7 @@ void testSplittingOccursOnLargeInput() {
 
     std::vector<Ray> rays;
     for (int i = 0; i < 100; ++i) {
-        rays.push_back({{-1.0f, (float)i, 5.0f}, {1,0,0}, 0.0f, 20.0f, 0.0f});
+        rays.push_back({{-1.0f, (float)i, 5.0f}, {1,0,0}, 0.0f, 20.0f, {0.0f, 0.0f, 0.0f}});
     }
 
     KdTree tree;
@@ -63,9 +63,9 @@ void testRayDuplicationOverBothSplits() {
     // Two groups of rays at different Y heights
     // so splits along Y will separate them
     for (int i = 0; i < 30; ++i)
-        rays.push_back({{0.f, 2.f, 5.f}, {1,0,0}, 0.f, 10.f, 1.f}); // y=2
+        rays.push_back({{0.f, 2.f, 5.f}, {1,0,0}, 0.f, 10.f, {1.0f, 1.0f, 1.0f}}); // y=2
     for (int i = 0; i < 30; ++i)
-        rays.push_back({{0.f, 8.f, 5.f}, {1,0,0}, 0.f, 10.f, 1.f}); // y=8
+        rays.push_back({{0.f, 8.f, 5.f}, {1,0,0}, 0.f, 10.f, {1.0f, 1.0f, 1.0f}}); // y=8
 
     KdTree tree;
     tree.build(rays, bounds);
@@ -93,7 +93,7 @@ void testRayDuplicationOverBothSplits() {
 void testTreeIndicesValid() {
     AABB bounds{{0,0,0}, {5,5,5}};
 
-    std::vector<Ray> rays(100, {{0,0,0}, {1,0,0}, 0.0f, 10.0f, 0.0f});
+    std::vector<Ray> rays(100, {{0,0,0}, {1,0,0}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}});
 
     KdTree tree;
     tree.build(rays, bounds);
@@ -114,7 +114,7 @@ void testTreeIndicesValid() {
 void testDepthLimit() {
     AABB bounds{{0,0,0}, {100,100,100}};
 
-    std::vector<Ray> rays(1000, {{0,0,0}, {1,0,0}, 0.0f, 100.0f, 0.0f});
+    std::vector<Ray> rays(1000, {{0,0,0}, {1,0,0}, 0.0f, 100.0f, {0.0f, 0.0f, 0.0f}});
 
     KdTree tree;
     tree.build(rays, bounds);
@@ -126,7 +126,7 @@ void testDepthLimit() {
 void testMetricA_ValidHit() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{0,0,5};
     Vec3 n{0,0,-1}; // facing the ray
 
@@ -140,7 +140,7 @@ void testMetricA_ValidHit() {
 void testMetricA_ParallelRay() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {1,0,0}, 0.0f, 10.0f, 0.0f};
+    Ray ray{{0,0,0}, {1,0,0}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{0,0,5};
     Vec3 n{0,0,1}; // perpendicular to ray
 
@@ -153,7 +153,7 @@ void testMetricA_ParallelRay() {
 void testMetricA_WrongHemisphere() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{0,0,5};
     Vec3 n{0,0,1}; // same direction → rejected
 
@@ -166,7 +166,7 @@ void testMetricA_WrongHemisphere() {
 void testMetricA_OutOfBoundsT() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 2.0f, 0.0f};
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 2.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{0,0,5};  // beyond t_max
     Vec3 n{0,0,-1};
 
@@ -179,7 +179,7 @@ void testMetricA_OutOfBoundsT() {
 void testMetricB_PointOnRay() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{0,0,5};
 
     float result = tree.metricB(ray, x);
@@ -191,7 +191,7 @@ void testMetricB_PointOnRay() {
 void testMetricB_PerpendicularDistance() {
     KdTree tree;
 
-    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, 0.0f};
+    Ray ray{{0,0,0}, {0,0,1}, 0.0f, 10.0f, {0.0f, 0.0f, 0.0f}};
     Vec3 x{1,0,5}; // 1 unit away from ray
 
     float result = tree.metricB(ray, x);
@@ -210,7 +210,7 @@ void testKNNMatchesBruteForce() {
         rays.push_back({
             {float(i % 10), float(i / 10), 0.f},
             {0,0,1},
-            0.f, 20.f, 0.f
+            0.f, 20.f, {0.0f, 0.0f, 0.0f}
         });
     }
 
@@ -268,10 +268,10 @@ void testKNNRespectsMaxDistance() {
     std::vector<Ray> rays;
     // near rays
     for (int i = 0; i < 10; ++i)
-        rays.push_back({{0,0,float(i)}, {0,0,1}, 0.f, 10.f, 0.f});
+        rays.push_back({{0,0,float(i)}, {0,0,1}, 0.f, 10.f, {0.0f, 0.0f, 0.0f}});
     // far rays
     for (int i = 0; i < 10; ++i)
-        rays.push_back({{0,0,float(i+50)}, {0,0,1}, 0.f, 100.f, 0.f});
+        rays.push_back({{0,0,float(i+50)}, {0,0,1}, 0.f, 100.f, {0.0f, 0.0f, 0.0f}});
 
     KdTree tree;
     tree.build(rays, bounds);
@@ -290,7 +290,7 @@ void testKNNRespectsMaxDistance() {
 void testKNNLessThanKResults() {
     AABB bounds{{0,0,0}, {10,10,10}};
 
-    std::vector<Ray> rays(5, {{0,0,0}, {0,0,1}, 0.f, 10.f, 0.f});
+    std::vector<Ray> rays(5, {{0,0,0}, {0,0,1}, 0.f, 10.f, {0.0f, 0.0f, 0.0f}});
 
     KdTree tree;
     tree.build(rays, bounds);
@@ -311,7 +311,7 @@ void testKNNDuplicateDistances() {
 
     // identical rays
     for (int i = 0; i < 20; ++i)
-        rays.push_back({{0,0,0}, {0,0,1}, 0.f, 10.f, 0.f});
+        rays.push_back({{0,0,0}, {0,0,1}, 0.f, 10.f, {0.0f, 0.0f, 0.0f}});
 
     KdTree tree;
     tree.build(rays, bounds);

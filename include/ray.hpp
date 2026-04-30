@@ -11,6 +11,12 @@ public:
     Vec3 operator+(const Vec3& o) const { return {x+o.x, y+o.y, z+o.z}; }
     Vec3 operator-(const Vec3& o) const { return {x-o.x, y-o.y, z-o.z}; }
     Vec3 operator*(float t) const { return {x*t, y*t, z*t}; }
+    Vec3 operator/(float t) const { return {x/t, y/t, z/t}; }
+    void operator+=(const Vec3& o) { 
+        x += o.x;
+        y += o.y;
+        z += o.z;
+    }
 
     float operator[](int i) const { return (&x)[i]; }
     float& operator[](int i) { return (&x)[i]; }
@@ -29,5 +35,5 @@ struct Ray {
     Vec3  dir; // TODO add debug assert, it has to be normalized
     float t_min;
     float t_max;
-    float flux; // TODO switch to rgb
+    Vec3 flux; // {r, g, b}
 };

@@ -2,9 +2,9 @@
 #include <cmath>
 #include <cfloat>
 
-float IrradianceEstimator::estimate(KdTree& tree, Vec3& x, Vec3& n, int K, float maxDist) const {
+Vec3 IrradianceEstimator::estimate(KdTree& tree, Vec3& x, Vec3& n, int K, float maxDist) const {
     std::vector<RayCandidate> candidates = tree.knn(x, n, K, maxDist);
-    if (candidates.empty()) return 0.0f; // nothing
+    if (candidates.empty()) return {0.0f, 0.0f, 0.0f}; // nothing
 
     // Now the estimator relies on a distance R for normalization. This should be the furthest
     // on the disc. 
@@ -28,12 +28,12 @@ float IrradianceEstimator::estimate(KdTree& tree, Vec3& x, Vec3& n, int K, float
     }   
 
 
-    if (discMaxR2 < 1e-8f) return 0.0f;  // degenerate
+    if (discMaxR2 < 1e-8f) return {0.0f, 0.0f, 0.0f};  // degenerate
 
     // Epanechnikov kernel: w(d) = 1 - d^2/R^2
     // normalized over disc area pi*R^2
 
-    float irradianceSum = 0.0f;
+    Vec3 irradianceSum = {0.0f, 0.0f, 0.0f};
     for (size_t i = 0; i < intersections.size(); ++i) {
         // can reuse the i index for both candidates and intersections
         const Ray& ray = tree.ray(candidates[i].rayIndex);

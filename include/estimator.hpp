@@ -5,6 +5,6 @@
 class IrradianceEstimator{
 public:
     // estimator based on 
-    float estimate(KdTree& tree, Vec3& x, Vec3& n, int K, float maxDist) const;
+    Vec3 estimate(KdTree& tree, Vec3& x, Vec3& n, int K, float maxDist) const;
 };
 
