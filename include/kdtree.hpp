@@ -49,6 +49,7 @@ struct DiscIntersection {
     // distance on a point to the x target on the surface
     float dist2;
     Vec3 point; 
+    int rayIndex;
 };
 
 
