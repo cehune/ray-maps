@@ -31,6 +31,6 @@ jobs:
           pip install -r segments/requirements.txt
 
       - name: Run pytest
-        run: 
+        run: |
           cd segments
           pytest -v

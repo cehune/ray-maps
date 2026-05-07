@@ -16,12 +16,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake g++
 
       - name: Configure
-        run: cmake -S . -B raymaps/build
+        run: |
+          cd raymaps
+          cmake -S . -B build
 
       - name: Build
-        run: cmake --build raymaps/build
+        run: cmake --build build
 
       - name: Run tests
-        run: |
-          cd raymaps/build
+        run: 
           ctest --output-on-failure
