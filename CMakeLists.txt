@@ -19,12 +19,17 @@ add_library(core
 
 target_include_directories(core PUBLIC include)
 
+add_executable(bias
+    src/bias.cpp
+)
+
 # tests
 add_executable(tests
     tests/tests.cpp
 )
 
 target_link_libraries(tests PRIVATE core)
+target_link_libraries(bias PRIVATE core)
 
 # Optional: enable testing via ctest
 enable_testing()
