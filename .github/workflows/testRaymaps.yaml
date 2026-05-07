@@ -17,7 +17,7 @@ jobs:
 
       - name: Configure
         run: |
-          cd raymaps
+          cd ray-maps
           cmake -S . -B build
 
       - name: Build
