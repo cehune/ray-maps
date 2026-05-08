@@ -15,6 +15,7 @@ class SurfacePoint:
     si: mi.SurfaceInteraction3f = None
     p: mi.Vector3f = None
     n: mi.Vector3f = None
+    bsdf: mi.BSDF = None
     Le: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0))
     is_camera: bool = False
     is_light: bool = False
@@ -26,6 +27,7 @@ class SurfacePoint:
             assert self.si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
             self.p = self.si.p
             self.n = self.si.n
+            self.bsdf = self.si.bsdf()
 
 @dataclass
 class Segment:
@@ -34,9 +36,11 @@ class Segment:
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
     pdf: float = 1.0
     visible: bool = True
+    is_camera_path: bool = True
 
     def __post_init__(self):
-        assert self.y.si.is_valid(), "Segment endpoint y is invalid"
+        if self.y.si is not None:
+            assert self.y.si.is_valid(), "Segment endpoint y is invalid"
 
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)

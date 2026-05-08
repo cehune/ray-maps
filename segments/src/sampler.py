@@ -1,11 +1,11 @@
 import mitsuba as mi
-from segments.src.primitives import *
+from primitives import *
 
 def luminance_rgb(c: mi.Color3f) -> float:
     """Perceived luminance weights for RGB."""
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 
-def generate_path(scene, sampler, starting_weight, starting_sp, si, max_depth=16, rr_start_depth = 3):
+def generate_path(scene, sampler, starting_weight, starting_sp, si, is_camera_path = True, max_depth=16, rr_start_depth = 3):
     """
     starting sp is either the camera or light
     si is the first surface interaction
@@ -20,7 +20,7 @@ def generate_path(scene, sampler, starting_weight, starting_sp, si, max_depth=16
         first_sp.is_light = True
         first_sp.Le = emitter.eval(si)
 
-    segment_path.append(Segment(starting_sp, first_sp, throughput=mi.Color3f(weight)))
+    segment_path.append(Segment(starting_sp, first_sp, throughput=mi.Color3f(weight), is_camera_path=is_camera_path))
 
     if first_sp.is_light:
         return segment_path
@@ -62,7 +62,7 @@ def generate_path(scene, sampler, starting_weight, starting_sp, si, max_depth=16
         if emitter_hit:
             curr_sp.is_light = True
             curr_sp.Le = emitter_hit.eval(si_next)
-            seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(weight))
+            seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(weight), is_camera_path=is_camera_path)
             segment_path.append(seg)
             break
 
@@ -117,7 +117,7 @@ def sample_light_path(scene, sampler, max_depth=16, rr_start_depth=3):
     # generate weight cost theta / pdfs
     weight = emitted_ray_weight / emitter_pdf
     
-    return generate_path(scene, sampler, weight, light_sp, si, max_depth, rr_start_depth)
+    return generate_path(scene, sampler, weight, light_sp, si, is_camera_path=False, max_depth=max_depth, rr_start_depth=rr_start_depth)
 
 def sample_camera_path(scene, sampler, ray, max_depth=16, rr_start_depth=3):
     # TODO: Change to BDPT which means adding ray weight into here, not applied after 
