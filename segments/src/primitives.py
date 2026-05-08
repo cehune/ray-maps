@@ -13,11 +13,15 @@ available for mac 26
 @dataclass
 class SurfacePoint:
     si: mi.SurfaceInteraction3f
+    Le: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0))
 
     def __post_init__(self):
         assert self.si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
         self.p = self.si.p
         self.n = self.si.sh_frame.n
+        self.is_camera = False
+        self.is_light = False
+
 
 @dataclass
 class Segment:
@@ -26,12 +30,18 @@ class Segment:
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
     pdf: float = 1.0
     visible: bool = True
-
+    
     def __post_init__(self):
         assert self.y.si.is_valid(), "Segment endpoint y is invalid"
 
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)
+
+        difference = self.y.p - self.x.p
+        self.len = dr.norm(difference)
+        
+        if self.len < 1e-4:  # tune this threshold to your scene scale
+            raise ValueError(f"Degenerate segment: length {self.len} too small")
         # DIR IS EQUIVALENT TO S HAT IN THE PAPER
         self.dir = difference / self.len
 

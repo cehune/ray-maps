@@ -1,7 +1,7 @@
 import mitsuba as mi
 import drjit as dr
 
-from src.segments import SurfacePoint, Segment
+from segments.src.primitives import SurfacePoint, Segment
 
 def test_two_bounce_segment():
     scene = mi.load_file('../samples/cbox/cbox.xml')
