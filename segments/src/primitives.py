@@ -12,16 +12,20 @@ available for mac 26
 
 @dataclass
 class SurfacePoint:
-    si: mi.SurfaceInteraction3f
+    si: mi.SurfaceInteraction3f = None
+    p: mi.Vector3f = None
+    n: mi.Vector3f = None
     Le: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0))
+    is_camera: bool = False
+    is_light: bool = False
 
     def __post_init__(self):
-        assert self.si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
-        self.p = self.si.p
-        self.n = self.si.sh_frame.n
-        self.is_camera = False
-        self.is_light = False
+        assert ((self.p is not None and self.n is not None) or self.si is not None), "Need to insert some params"
 
+        if (self.si is not None):
+            assert self.si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
+            self.p = self.si.p
+            self.n = self.si.n
 
 @dataclass
 class Segment:
@@ -30,7 +34,7 @@ class Segment:
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
     pdf: float = 1.0
     visible: bool = True
-    
+
     def __post_init__(self):
         assert self.y.si.is_valid(), "Segment endpoint y is invalid"
 

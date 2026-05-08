@@ -1,78 +1,137 @@
 import mitsuba as mi
-from primitives import *
+from segments.src.primitives import *
 
 def luminance_rgb(c: mi.Color3f) -> float:
     """Perceived luminance weights for RGB."""
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 
-
-def sample_camera_path(scene, sampler, ray, max_depth=16, rr_start_depth=3):
-    # TODO: Change to BDPT which means adding ray weight into here, not applied after 
-    # in the main render loop 
+def generate_path(scene, sampler, starting_weight, starting_sp, si, max_depth=16, rr_start_depth = 3):
+    """
+    starting sp is either the camera or light
+    si is the first surface interaction
+    """
+    first_sp = SurfacePoint(si = si)
     segment_path = []
-    weight = mi.Color3f(1.0)
+    weight = starting_weight
 
-    si = scene.ray_intersect(ray)
-    if not si.is_valid():
+    # if it's a light, then we just return after setting the first hit to a light src
+    emitter = si.emitter(scene)
+    if emitter:
+        first_sp.is_light = True
+        first_sp.Le = emitter.eval(si)
+
+    segment_path.append(Segment(starting_sp, first_sp, throughput=mi.Color3f(weight)))
+
+    if first_sp.is_light:
         return segment_path
-    else:
-        # generate first segment, which starts at the camera
-        s0 = SurfacePoint()
-        s0.p = ray.origin
-        s0.n = ray.direction
-        s0.is_camera = True
-        segment_path.append(Segment(s0, si), 1.0)
-
-    prev_sp = SurfacePoint(si)
+    
+    # then we set up the loop
+    prev_sp = first_sp
 
     for i in range(max_depth):
-        # sample next direction first
+        # generate bsdf at the point
         bsdf = si.bsdf()
-        bsdf_sample, bsdf_weight = bsdf.sample(
+        bs, bsdf_weight = bsdf.sample(
             mi.BSDFContext(), si,
             sampler.next_1d(),
             mi.Point2f(sampler.next_1d(), sampler.next_1d())
         )
 
-        if bsdf_sample.pdf == 0 or dr.all(bsdf_weight == 0):
+        if bs.pdf == 0 or dr.all(bsdf_weight == 0):
             break
+
+        weight *= bsdf_weight
 
         # russian roulette
         if i >= rr_start_depth:
-            q = min(1.0, luminance_rgb(weight))
+            q = min(0.97, luminance_rgb(weight))
             if sampler.next_1d() >= q:
                 break
             weight /= q
 
-        weight *= bsdf_weight # update weight before building segment
-
-
-        wo = si.to_world(bsdf_sample.wo)
-        next_ray = si.spawn_ray(wo)
-        si_next = scene.ray_intersect(next_ray)
-
+        # bs.wo is the sample direction outgoing in local space, convert to world
+        world_wo = si.to_world(bs.wo)
+        si_next = scene.ray_intersect(si.spawn_ray(world_wo))
         if not si_next.is_valid():
+            # TODO: get scene evnironemnt contribution
             break
 
-        curr_sp = SurfacePoint(si_next)
+        curr_sp = SurfacePoint(si = si_next)
 
-        # check emitter before building segment
-        if si_next.emitter(scene):
+        emitter_hit = si_next.emitter(scene)
+        if emitter_hit:
             curr_sp.is_light = True
-            curr_sp.Le = si_next.emitter(scene).eval(si_next)
-
-        try:
+            curr_sp.Le = emitter_hit.eval(si_next)
             seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(weight))
             segment_path.append(seg)
-        except ValueError:
             break
 
-        if curr_sp.is_light:
+        if dr.norm(curr_sp.p - prev_sp.p) < 1e-4:
             break
+
+        seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(weight))
+        segment_path.append(seg)
 
         prev_sp = curr_sp
         si = si_next
+
     return segment_path
+
+def sample_light_path(scene, sampler, max_depth=16, rr_start_depth=3):
+    # just get an emitter, weighted by their power
+    emitter_sample = scene.sample_emitter(sampler.next_1d())
+    emitter = emitter = scene.emitters()[emitter_sample[0]]
+    print(type(emitter_sample[0]))
+    emitter_pdf = emitter_sample[1] # probability of having selected that emitter
+    # dividing by this pdf later is importance sampling, want to sample from bright lights
+    # more often
+
+    if emitter_pdf == 0: # non valid, shouldn't mmatter for well defined scenes
+        return []
+    
+    # sample outgoing direction from emitter (cosine weighted over hemisphere)
+    # this would give local, and then we would have to rotate by the emitter normal
+    # and retrieve the pdf for that direction. can just directly do emitter.sample
+    # but with sample ray we just get a random one on it's surface
+    emitted_ray, emitted_ray_weight = emitter.sample_ray(
+        time=0.0,
+        sample1=sampler.next_1d(),
+        sample2=mi.Point2f(sampler.next_1d(), sampler.next_1d()),
+        sample3=mi.Point2f(sampler.next_1d(), sampler.next_1d())
+    )
+
+    if dr.all(emitted_ray_weight == 0):
+        return []
+
+    light_sp = SurfacePoint(
+        p = emitted_ray.o,
+        n = -emitted_ray.d,
+        is_light = True
+    )
+
+    si = scene.ray_intersect(emitted_ray)
+
+    if not si.is_valid():
+        return []
+    
+    # generate weight cost theta / pdfs
+    weight = emitted_ray_weight / emitter_pdf
+    
+    return generate_path(scene, sampler, weight, light_sp, si, max_depth, rr_start_depth)
+
+def sample_camera_path(scene, sampler, ray, max_depth=16, rr_start_depth=3):
+    # TODO: Change to BDPT which means adding ray weight into here, not applied after 
+    # in the main render loop 
+    si = scene.ray_intersect(ray)
+    if not si.is_valid():
+        return []
+    
+    # first segment: view origin -> first hit
+    cam_sp = SurfacePoint(p = ray.o, n = -ray.d)
+    cam_sp.is_camera = True
+
+    return generate_path(scene, sampler, mi.Color3f(1.0), cam_sp, si, max_depth, rr_start_depth)
+
 
 def evaluate_path_base(segments: list[Segment]) -> mi.Color3f:
     # stupid estimator that just selects last segment's emitter contribution
