@@ -29,15 +29,26 @@ class SurfacePoint:
             self.n = self.si.n
             self.bsdf = self.si.bsdf()
 
+from enum import IntEnum
+
+class SegmentTechnique(IntEnum):
+    CAMERA = 0
+    LIGHT  = 1
+    BRIDGE = 2
+
 @dataclass
 class Segment:
     x: SurfacePoint
     y: SurfacePoint
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
-    pdf: float = 1.0
-    visible: bool = True
-    is_camera_path: bool = True
-
+    # radiance in is the Le term, radiance out is found via the integral
+    radiance_in: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # incoming radiance before prop
+    radiance_out: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # after propogation
+    # probability equation (15)
+    pdf: float = 1.0 
+    mmis_weight: float = 0.0
+    cluster_idx: int = -1  
+    technique: SegmentTechnique = SegmentTechnique.CAMERA
     def __post_init__(self):
         if self.y.si is not None:
             assert self.y.si.is_valid(), "Segment endpoint y is invalid"

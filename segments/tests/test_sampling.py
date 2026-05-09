@@ -162,13 +162,15 @@ def test_camera_path_returns_segments():
             sampler.next_1d() * film_size.x,
             sampler.next_1d() * film_size.y
         )
-        ray, _ = sensor.sample_ray(
+        ray, ray_weight = sensor.sample_ray(
             time=0.0,
             sample1=sampler.next_1d(),
             sample2=pixel / film_size,
             sample3=mi.Point2f(sampler.next_1d(), sampler.next_1d())
         )
-        path = sample_camera_path(scene, sampler, ray)
+        si = scene.ray_intersect(ray)
+
+        path = sample_camera_path(scene, sampler, ray, ray_weight, si)
         if len(path) > 0:
             return
 
@@ -190,13 +192,14 @@ def test_camera_path_first_segment_starts_at_camera():
             sampler.next_1d() * film_size.x,
             sampler.next_1d() * film_size.y
         )
-        ray, _ = sensor.sample_ray(
+        ray, ray_weight = sensor.sample_ray(
             time=0.0,
             sample1=sampler.next_1d(),
             sample2=pixel / film_size,
             sample3=mi.Point2f(sampler.next_1d(), sampler.next_1d())
         )
-        path = sample_camera_path(scene, sampler, ray)
+        si = scene.ray_intersect(ray)
+        path = sample_camera_path(scene, sampler, ray, ray_weight, si)
         if len(path) > 0:
             assert path[0].x.is_camera, \
                 "First segment x must be the camera"
