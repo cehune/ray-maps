@@ -36,7 +36,7 @@ def test_two_bounce_segment():
         if not si.is_valid():
             continue
 
-        surface_point_1 = SurfacePoint(si)
+        surface_point_1 = SurfacePoint.from_intersection(si)
 
         bsdf = si.bsdf()
 
@@ -58,7 +58,7 @@ def test_two_bounce_segment():
         if not si2.is_valid():
             continue
 
-        surface_point_2 = SurfacePoint(si2)
+        surface_point_2 = SurfacePoint.from_intersection(si2)
 
         segment = Segment(
             surface_point_1,
