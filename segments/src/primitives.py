@@ -12,7 +12,6 @@ available for mac 26
 
 @dataclass
 class SurfacePoint:
-    si: mi.SurfaceInteraction3f = None
     p: mi.Vector3f = None
     n: mi.Vector3f = None
     bsdf: mi.BSDF = None
@@ -20,14 +19,15 @@ class SurfacePoint:
     is_camera: bool = False
     is_light: bool = False
 
-    def __post_init__(self):
-        assert ((self.p is not None and self.n is not None) or self.si is not None), "Need to insert some params"
-
-        if (self.si is not None):
-            assert self.si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
-            self.p = self.si.p
-            self.n = self.si.n
-            self.bsdf = self.si.bsdf()
+    @staticmethod
+    def from_intersection(si: mi.SurfaceInteraction3f, **kwargs) -> 'SurfacePoint':
+        assert si.is_valid(), "Cannot construct SurfacePoint from invalid intersection"
+        return SurfacePoint(
+            p=si.p,
+            n=si.n,
+            bsdf=si.bsdf(),
+            **kwargs
+        )
 
 from enum import IntEnum
 
@@ -50,12 +50,6 @@ class Segment:
     cluster_idx: int = -1  
     technique: SegmentTechnique = SegmentTechnique.CAMERA
     def __post_init__(self):
-        if self.y.si is not None:
-            assert self.y.si.is_valid(), "Segment endpoint y is invalid"
-
-        difference = self.y.p - self.x.p
-        self.len = dr.norm(difference)
-
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)
         

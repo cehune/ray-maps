@@ -12,7 +12,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
 
     returns a path of disconnected segments with independant throughput from x to y
     """
-    first_sp = SurfacePoint(si = si)
+    first_sp = SurfacePoint.from_intersection(si)
     segment_path = []
 
     # if it's a light, then we just return after setting the first hit to a light src
@@ -59,7 +59,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
             # TODO: get scene evnironemnt contribution
             break
 
-        curr_sp = SurfacePoint(si = si_next)
+        curr_sp = SurfacePoint.from_intersection(si_next)
 
         emitter_hit = si_next.emitter(scene)
         if emitter_hit:
