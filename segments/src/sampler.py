@@ -104,8 +104,7 @@ def sample_light_path(scene, sampler, max_depth=16, rr_start_depth=3):
         return []
 
     light_sp = SurfacePoint(
-        p = emitted_ray.o,
-        n = -emitted_ray.d,
+        si = make_endpoint_si(emitted_ray.o, -emitted_ray.d),
         is_light = True
     )
 
@@ -125,9 +124,9 @@ def sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=16, rr_sta
     if not si.is_valid():
         return []
     
-    cam_sp = SurfacePoint(p=ray.o, n=mi.Vector3f(-ray.d))
-    cam_sp.is_camera = True
-
+    cam_sp = SurfacePoint(
+        si = make_endpoint_si(ray.o,-ray.d),
+        is_camera = True)
     return generate_path(scene, sampler, ray_weight, cam_sp, si,
                           technique=SegmentTechnique.CAMERA,
                           max_depth=max_depth,

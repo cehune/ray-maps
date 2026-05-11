@@ -155,12 +155,15 @@ class Cluster:
             # renormalize only when constructing the plane for area estimation
 
 
-    def cluster(self, rng: np.random.Generator):
+    def cluster(self, rng: np.random.Generator, voxel_size = 0):
         # give cluster as variable since each iteration clusters and has a differetn jitter offset
         assert len(self.segments) > 0, "No segments set"
         assert self.c > 0, "Target cluster size c must be positive"
 
-        self.voxel_size = self._compute_voxel_size()
+        if (voxel_size == 0):
+            self.voxel_size = self._compute_voxel_size()
+        else:
+            self.voxel_size = voxel_size
         positions, normals = self._flatten_endpoints()
 
         keys = self._generate_cluster_keys(positions, normals, rng)
