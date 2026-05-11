@@ -6,7 +6,7 @@ import math
 mi.set_variant('scalar_rgb')
 
 from segments.src.cluster import Cluster
-from segments.src.primitives import SurfacePoint, Segment, SegmentTechnique
+from segments.src.primitives import *
 
 
 # ---------------------------------------------------------------------------
@@ -14,10 +14,7 @@ from segments.src.primitives import SurfacePoint, Segment, SegmentTechnique
 # ---------------------------------------------------------------------------
 
 def make_surface_point(px, py, pz, nx, ny, nz) -> SurfacePoint:
-    return SurfacePoint(
-        p=mi.Point3f(px, py, pz),
-        n=mi.Vector3f(nx, ny, nz),
-    )
+    return SurfacePoint(si = make_endpoint_si(mi.Point3f(px, py, pz), mi.Vector3f(nx, ny, nz)))
 
 
 def make_segment(x: SurfacePoint, y: SurfacePoint, **kwargs) -> Segment:

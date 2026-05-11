@@ -54,6 +54,7 @@ class Renderer:
                 seg.radiance_in = seg.y.Le  # zero for non-emissive, Le for light hits
         
         # 4. mmis weights
+        # approximate 1 / |cluster| for now
 
         # 5. propogate backward
         for path in self.segment_pool.camera_paths:
