@@ -36,7 +36,7 @@ endpoints dont have native surface interactions, this just generates one for us
 def make_endpoint_si(p: mi.Vector3f, n: mi.Vector3f) -> mi.SurfaceInteraction3f:
     si = mi.SurfaceInteraction3f()
     si.p = p
-    si. = n
+    si.n = n
     si.sh_frame = mi.Frame3f(n)  # at least a valid frame derived from n
     return si
 
