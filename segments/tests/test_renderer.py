@@ -1,7 +1,5 @@
-import pytest
 import numpy as np
 import mitsuba as mi
-import drjit as dr
 from segments.tests.utils import *
 from segments.src.renderer import *
 
