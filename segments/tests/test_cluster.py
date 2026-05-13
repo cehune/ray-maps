@@ -7,19 +7,12 @@ mi.set_variant('scalar_rgb')
 
 from segments.src.cluster import Cluster
 from segments.src.primitives import *
+from segments.tests.utils import make_segment, make_surface_point
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def make_surface_point(px, py, pz, nx, ny, nz) -> SurfacePoint:
-    return SurfacePoint(si = make_endpoint_si(mi.Point3f(px, py, pz), mi.Vector3f(nx, ny, nz)))
-
-
-def make_segment(x: SurfacePoint, y: SurfacePoint, **kwargs) -> Segment:
-    return Segment(x=x, y=y, **kwargs)
-
 
 def make_aabb(min_pt, max_pt) -> mi.BoundingBox3f:
     aabb = mi.BoundingBox3f()

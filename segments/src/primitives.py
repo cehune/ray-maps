@@ -49,6 +49,8 @@ class SegmentTechnique(IntEnum):
 class Segment:
     x: SurfacePoint
     y: SurfacePoint
+    wo_local: mi.Vector3f = None
+    wi_local: mi.Vector3f = None
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
     # radiance in is the Le term, radiance out is found via the integral
     radiance_in: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # incoming radiance before prop
@@ -58,12 +60,13 @@ class Segment:
     mmis_weight: float = 0.0
     cluster_idx: int = -1  
     technique: SegmentTechnique = SegmentTechnique.CAMERA
+    
     def __post_init__(self):
         # assert self.y.si.is_valid(), "endpoint is not valid on segment!!!!"
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)
         
-        if self.len < 1e-4:  # tune this threshold to your scene scale
+        if self.len < 1e-8:  # tune this threshold to your scene scale
             raise ValueError(f"Degenerate segment: length {self.len} too small")
         # DIR IS EQUIVALENT TO S HAT IN THE PAPER
         self.dir = difference / self.len
@@ -73,4 +76,9 @@ class Segment:
         # abs because we can get negative values if the normal is facing away from the direction
         self.geom_term = (dr.abs(dr.dot(self.x.n, self.dir)) * dr.abs(dr.dot(self.y.n, self.dir))) * \
             (1.0 / (self.len * self.len))
+        
+        wi_world = dr.normalize(self.x.p - self.y.p)
+        self.wi_local = mi.Frame3f(self.x.n).to_local(wi_world)
+        self.y.si.wi = self.wi_local
+
         
