@@ -17,6 +17,7 @@ class Cluster:
     endpoint_metadata: list = field(default_factory=list)  # (2S, 2) — (segment_idx, which_end)
     
     # outputs
+    # contiguous indices of surface points
     sorted_indices: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     cluster_ranges: list = field(default_factory=list)  # list of (start, end) into sorted_indices
 
@@ -169,12 +170,23 @@ class Cluster:
         keys = self._generate_cluster_keys(positions, normals, rng)
 
         # sort
+        """
+        each endpoint has an associated keys within the 2S keys array
+        this sorts so that endpoints with the same key are contiguous
+        But the keys just contains the index from the original flattened endpoint
+        arrays. Sorted indices doesn't actually contain any key information, just 
+        means that any endpoints sharing the same key are next to eachother.
+
+        we need to pass over the sorted_keys array AGAIN to find the ranges
+        where each key starts and ends!!!!
+        """
         self.sorted_indices = np.argsort(keys, kind='stable').astype(np.int32)
         sorted_keys = keys[self.sorted_indices]
 
         self.cluster_ranges = self._find_cluster_ranges(sorted_keys)
-
+    
         self.compute_cluster_stats(positions, normals)
+        self.build_reverse_map()
 
     def get_cluster_segments(self, cluster_idx: int) -> list:
         """
@@ -189,5 +201,14 @@ class Cluster:
             seg_idx, which_end    = self.endpoint_metadata[flat_idx]
             result.append((self.segments[seg_idx], int(which_end)))
         return result
-    
 
+    def build_reverse_map(self):
+        self.endpoint_to_cluster = np.empty(len(self.segments) * 2, dtype=np.int32)
+        for c_idx, (start, end) in enumerate(self.cluster_ranges):
+            self.endpoint_to_cluster[self.sorted_indices[start:end]] = c_idx
+
+    def get_y_cluster(self, seg_idx: int) -> int:
+        """Returns the cluster index containing y-endpoint of segment seg_idx.
+        This is just for testing"""
+        flat_idx = seg_idx * 2 + 1  # which_end=1 is y
+        return self.endpoint_to_cluster[flat_idx]

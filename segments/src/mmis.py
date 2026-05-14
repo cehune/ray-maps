@@ -1,5 +1,5 @@
-
-
+from segments.src.cluster import Cluster
+from segments.src.primitives import SegmentTechnique
 class MMIS:
     """
     What are technique spaces? we have 2, fromt he camera and 
@@ -21,32 +21,46 @@ class MMIS:
     
     Technique spaces: for unidirectional, one technique (camera sequential sampler).
     For each segment s, we ask: over all auxiliaries t in the cluster at x_s whose
-    y_t is in that cluster, what is the total conditional probability mass on s?
+    y_t is in that cluster, what is the total conditional probability mass on s? So basically
+    if it is likely to have a segment as a continuiation from another segment, then 
 
     Weight = 1 / sum of conditional PDFs over all valid auxiliaries.
     Auxiliary validity: y_t must be in the same cluster as x_s (spatial),
     directionality handled naturally by the BSDF PDF being near zero for bad directions.
     """
 
-    def compute_mmis_weight(self, segment, cluster) -> float:
+
+    """
+    should own
+    the summation loop, the 1/p_sum inversion, the cluster lookup — the algorithm structure that is sampler-agnostic"""
+
+    def compute_mmis_weight(self, segment, main_seg_idx, cluster: Cluster, samplers) -> float:
         """
         For unidirectional: sum conditional PDFs over all segments in cluster,
         treating each as a potential auxiliary (y_t -> x_s relationship).
         Returns 1/p_sum.
         """
-        # TODO: replace with real conditional PDF sum
-        n = len(cluster.segments)
-        return 1.0 / n if n > 0 else 0.0
+        p_sum = 0.0
 
-    def conditional_pdf(self, segment, auxiliary) -> float:
-        """
-        p(segment | auxiliary): probability that auxiliary spawned segment.
-        = BSDF pdf at y_auxiliary for direction toward segment * area conversion.
-        """
-        # TODO: implement real PDF
-        return 1.0
+        # --- Technique space 1: CAMERA sampler ---
+        # s' can be a continuation of a camera segment t where y_t ≈ x_{s'}
+        x_cluster_idx = cluster.endpoint_to_cluster[main_seg_idx * 2 + 0]
+        start, end = cluster.cluster_ranges[x_cluster_idx]
+        for flat_idx in cluster.sorted_indices[start:end]:
+            aux_seg_idx, which_end = cluster.endpoint_metadata[flat_idx]
+            if which_end == 1:  # y-endpoint of t is in this cluster
+                t = cluster.segments[aux_seg_idx]
+                sampler = samplers[t.technique]
+                if sampler.technique_type == SegmentTechnique.CAMERA:
+                    p_sum += sampler.conditional_pdf(segment, t)
 
-    def compute_all_mmis_weights(self, clusters) -> None:
-        for cluster in clusters:
-            for segment in cluster.segments:
-                segment.mmis_weight = self.compute_mmis_weight(segment, cluster)
+        # TODO: light sampling
+
+        return 1.0 / p_sum if p_sum > 0.0 else 0.0
+
+    def compute_all_mmis_weights(self, cluster, samplers) -> None:
+        for seg_idx, segment in enumerate(cluster.segments):
+            if segment.x.is_camera or segment.x.is_light:
+                segment.mmis_weight = 1.0
+                continue
+            segment.mmis_weight = self.compute_mmis_weight(segment, seg_idx, cluster, samplers)

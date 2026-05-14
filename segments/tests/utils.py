@@ -2,6 +2,7 @@ import pytest
 import mitsuba as mi
 from segments.src.primitives import Segment, SurfacePoint, make_endpoint_si
 from unittest.mock import MagicMock
+from segments.src.cluster import Cluster
 
 @pytest.fixture
 def simple_scene():
@@ -51,9 +52,9 @@ def scene_sensor_sampler(simple_scene):
     sampler.seed(0, 32 * 32)
     return simple_scene, sensor, sampler
 
-def make_surface_point(px, py, pz, nx, ny, nz) -> SurfacePoint:
+def make_surface_point(px, py, pz, nx, ny, nz, is_camera=False, is_light=False) -> SurfacePoint:
     si = make_endpoint_si(mi.Point3f(px, py, pz), mi.Vector3f(nx, ny, nz))
-    return SurfacePoint(si = si)
+    return SurfacePoint(si = si, is_camera = is_camera, is_light = is_light)
 
 def make_surface_point_with_mock_bsdf(px, py, pz, nx, ny, nz, bsdf_pdf_value=1.0):
     """
@@ -74,3 +75,43 @@ def make_surface_point_with_mock_bsdf(px, py, pz, nx, ny, nz, bsdf_pdf_value=1.0
 
 def make_segment(x: SurfacePoint, y: SurfacePoint, **kwargs) -> Segment:
     return Segment(x=x, y=y, **kwargs)
+
+@pytest.fixture
+def simple_segments():
+    """
+    3 segments with known positions and normals.
+    Segments 0 and 2 have x-endpoints that are spatially close
+    and share the same normal — they should cluster together.
+    Segment 1 is far away.
+    """
+    # seg 0: x endpoint near [0.1, 0.1, 0.1], normal up
+    s0 = make_segment(
+        x=make_surface_point(0.10, 0.10, 0.10,  0, 1, 0),
+        y=make_surface_point(0.50, 0.50, 0.50,  0, 1, 0),
+    )
+    # seg 1: far away
+    s1 = make_segment(
+        x=make_surface_point(0.80, 0.80, 0.80,  1, 0, 0),
+        y=make_surface_point(0.85, 0.85, 0.85,  1, 0, 0),
+    )
+    # seg 2: x endpoint near seg 0's x endpoint, same normal
+    s2 = make_segment(
+        x=make_surface_point(0.12, 0.11, 0.09,  0, 1, 0),
+        y=make_surface_point(0.55, 0.55, 0.55,  0, 1, 0),
+    )
+    return [s0, s1, s2]
+
+
+@pytest.fixture
+def cluster(simple_segments):
+    unit_aabb = make_aabb([0, 0, 0], [1, 1, 1])
+    c = Cluster(c=5)
+    c.set_scene_aabb(unit_aabb)
+    c.set_segments(simple_segments)
+    return c
+
+def make_aabb(min_pt, max_pt) -> mi.BoundingBox3f:
+    aabb = mi.BoundingBox3f()
+    aabb.expand(mi.Point3f(*min_pt))
+    aabb.expand(mi.Point3f(*max_pt))
+    return aabb

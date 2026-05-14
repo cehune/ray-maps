@@ -7,19 +7,7 @@ mi.set_variant('scalar_rgb')
 
 from segments.src.cluster import Cluster
 from segments.src.primitives import *
-from segments.tests.utils import make_segment, make_surface_point
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_aabb(min_pt, max_pt) -> mi.BoundingBox3f:
-    aabb = mi.BoundingBox3f()
-    aabb.expand(mi.Point3f(*min_pt))
-    aabb.expand(mi.Point3f(*max_pt))
-    return aabb
-
+from segments.tests.utils import *
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,48 +17,11 @@ def make_aabb(min_pt, max_pt) -> mi.BoundingBox3f:
 def rng():
     return np.random.default_rng(seed=42)
 
-
-@pytest.fixture
-def simple_segments():
-    """
-    3 segments with known positions and normals.
-    Segments 0 and 2 have x-endpoints that are spatially close
-    and share the same normal — they should cluster together.
-    Segment 1 is far away.
-    """
-    # seg 0: x endpoint near [0.1, 0.1, 0.1], normal up
-    s0 = make_segment(
-        x=make_surface_point(0.10, 0.10, 0.10,  0, 1, 0),
-        y=make_surface_point(0.50, 0.50, 0.50,  0, 1, 0),
-    )
-    # seg 1: far away
-    s1 = make_segment(
-        x=make_surface_point(0.80, 0.80, 0.80,  1, 0, 0),
-        y=make_surface_point(0.85, 0.85, 0.85,  1, 0, 0),
-    )
-    # seg 2: x endpoint near seg 0's x endpoint, same normal
-    s2 = make_segment(
-        x=make_surface_point(0.12, 0.11, 0.09,  0, 1, 0),
-        y=make_surface_point(0.55, 0.55, 0.55,  0, 1, 0),
-    )
-    return [s0, s1, s2]
-
-
-@pytest.fixture
-def cluster( simple_segments):
-    unit_aabb = make_aabb([0, 0, 0], [1, 1, 1])
-    c = Cluster(c=5)
-    c.set_scene_aabb(unit_aabb)
-    c.set_segments(simple_segments)
-    return c
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 class TestCluster:
-
     def test_voxel_size_formula(self, simple_segments):
         """r = cbrt(c * Vol / N) where N = 2 * num_segments."""
         unit_aabb = make_aabb([0, 0, 0], [1, 1, 1])

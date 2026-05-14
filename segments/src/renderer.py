@@ -1,5 +1,5 @@
 from pool import SegmentPool
-from sampler import *
+from segments.src.segment_gen_sampler import *
 from primitives import *
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
