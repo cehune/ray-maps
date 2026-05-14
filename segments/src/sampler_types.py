@@ -3,8 +3,9 @@ import drjit as dr
 from primitives import Segment, SegmentTechnique
 
 class SequentialSampler:
+    technique_type = SegmentTechnique.CAMERA
     # should just do the pdf move from mmis
-     def conditional_pdf(self, segment: Segment, auxiliary: Segment) -> float:
+    def conditional_pdf(self, segment: Segment, auxiliary: Segment) -> float:
         """
         p(segment | auxiliary): probability that auxiliary spawned segment.
         this is the equation 15
