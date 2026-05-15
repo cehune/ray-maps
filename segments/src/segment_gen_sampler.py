@@ -56,7 +56,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
         world_wo = si.to_world(bs.wo)
         si_next = scene.ray_intersect(si.spawn_ray(world_wo))
         if not si_next.is_valid():
-            # TODO: get scene evnironemnt contribution
+            # TODO: get scexe evnironemnt contribution
             break
 
         curr_sp = SurfacePoint.from_intersection(si_next)
