@@ -51,22 +51,21 @@ class Renderer:
         # 3. initialize radiance in
         for path in self.segment_pool.camera_paths:
             for seg in path:
-                seg.radiance_in = seg.y.Le  # zero for non-emissive, Le for light hits
-        
+                seg.Le = seg.y.Le  # zero for non-emissive, Le for light hits
         # 4. mmis weights
         # approximate 1 / |cluster| for now
 
         # 5. propogate backward
         for path in self.segment_pool.camera_paths:
             for i in reversed(range(len(path) - 1)):
-                path[i].radiance_in = path[i].throughput * path[i + 1].radiance_in
+                path[i].Le = path[i].throughput * path[i + 1].le
 
         # 6. gather
         accum = np.zeros((height * width, 3))
         for pixel_idx, first_seg in enumerate(self.camera_first_segments):
             if first_seg is None:
                 continue
-            val = first_seg.throughput * first_seg.radiance_in
+            val = first_seg.throughput * first_seg.Le
             accum[pixel_idx] = [float(val[0]), float(val[1]), float(val[2])]
 
         return accum.reshape(height, width, 3)
