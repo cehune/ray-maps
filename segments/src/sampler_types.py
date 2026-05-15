@@ -1,8 +1,17 @@
 import mitsuba as mi
 import drjit as dr
 from primitives import Segment, SegmentTechnique
+from abc import ABC, abstractmethod
 
-class SequentialSampler:
+
+class Sampler(ABC):
+    technique_type: SegmentTechnique
+
+    @staticmethod
+    def build_registry(*samplers: 'Sampler') -> dict[SegmentTechnique, 'Sampler']:
+        return {s.technique_type: s for s in samplers}
+
+class SequentialSampler(Sampler):
     technique_type = SegmentTechnique.CAMERA
     # should just do the pdf move from mmis
     def conditional_pdf(self, segment: Segment, auxiliary: Segment) -> float:
@@ -43,3 +52,28 @@ class SequentialSampler:
         cosine = dr.abs(dr.dot(segment.y.n, wo_world))
 
         return pw * cosine / (segment.len ** 2)
+    
+    """
+    KLEEP IN MIND THE LOGIC IS DIFF FROM THE PDF
+    EARLIER IN MMIS WE WERE FINDING WHICH MIGHT LEAD TO OUR ENDPOINT IN THE CLUISTER
+
+    NOW WE ARE JUST LOOKING AT THE ENDPOINT AND FINDING WHAT IT BSDFS WITH
+    """
+    @staticmethod
+    def shift_invariant_bsdf(seg: Segment, next_seg: Segment) -> mi.Color3f:
+        """
+        f_r(s, s') via shift-invariant approximation, Eq (6).
+        Evaluate BSDF at y of s:
+          wi = -seg.dir  (incoming at y, from x)
+          wo = direction from y toward y' of aux_seg
+        """
+        wo_world = dr.normalize(next_seg.y.p - seg.y.p)
+
+        frame_y = mi.Frame3f(seg.y.n)
+        si = seg.y.si
+        wo_local = frame_y.to_local(wo_world)
+
+        bsdf = si.bsdf()
+        if bsdf is None:
+            return mi.Color3f(0.0)
+        return bsdf.eval(si, wo_local)

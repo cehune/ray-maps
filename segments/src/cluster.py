@@ -9,7 +9,7 @@ class Cluster:
     could also just do a spatial hash if you want
     """
     segments: list = field(default_factory=list)
-    scene_aabb: mi.BoundingBox3f = field(default_factory=mi.BoundingBox3f)
+    scene_aabb: mi.BoundingBox3f = None
     c: int = 5 # expected number of points / voxel
 
     # need these to know which segment each segment endpoint actually belongs to
