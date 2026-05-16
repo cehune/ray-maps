@@ -1,8 +1,14 @@
 import pytest
 import mitsuba as mi
+<<<<<<< HEAD:segment_blt/tests/utils.py
 from segments.primitives import Segment, SurfacePoint, make_endpoint_si, SegmentTechnique
 from unittest.mock import MagicMock
 from segments.cluster import Cluster
+=======
+from segments.src.primitives import Segment, SurfacePoint, make_endpoint_si, SegmentTechnique
+from unittest.mock import MagicMock
+from segments.src.cluster import Cluster
+>>>>>>> 323366fef9a1bad692fc55c853d01162bffefd75:segments/tests/utils.py
 import numpy as np
 
 class ZeroRng:
