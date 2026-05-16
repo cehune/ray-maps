@@ -26,3 +26,12 @@ class SegmentPool:
         return sum(len(p) for p in this.light_paths)
 
     
+class SegmentPoolV2:
+    paths: list
+    def __init__(self):
+        self.segments = []
+    
+    def add_path(self, path):
+        self.segments.extend(path)
+    def clear(self):
+        self.segments.clear()
