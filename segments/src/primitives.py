@@ -64,6 +64,8 @@ class Segment:
     technique: SegmentTechnique = SegmentTechnique.CAMERA
     
     def __post_init__(self):
+        self.Le = self.y.Le
+        
         # assert self.y.si.is_valid(), "endpoint is not valid on segment!!!!"
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)
