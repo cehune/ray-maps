@@ -5,9 +5,9 @@ import math
 
 mi.set_variant('scalar_rgb')
 
-from segments.src.cluster import Cluster
-from segments.src.primitives import *
-from segments.tests.utils import *
+from segments.cluster import Cluster
+from segments.primitives import *
+from tests.utils import *
 
 # ---------------------------------------------------------------------------
 # Fixtures

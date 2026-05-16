@@ -1,7 +1,7 @@
-from segments.tests.utils import *
-from segments.src.primitives import SegmentTechnique
-from segments.src.mmis import MMIS
-from segments.src.cluster import Cluster
+from tests.utils import *
+from segments.primitives import SegmentTechnique
+from segments.mmis import MMIS
+from segments.cluster import Cluster
 import math
 import numpy as np
 

@@ -1,6 +1,6 @@
 import mitsuba as mi
-from primitives import *
-from segments.src.renderer import Renderer
+from segments.primitives import *
+from segments.renderer import Renderer
 
 
 

@@ -1,5 +1,5 @@
 import mitsuba as mi
-from primitives import *
+from segments.primitives import *
 
 def luminance_rgb(c: mi.Color3f) -> float:
     """Perceived luminance weights for RGB."""

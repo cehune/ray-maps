@@ -4,10 +4,10 @@ import numpy as np
 import mitsuba as mi
 import drjit as dr
 from unittest.mock import MagicMock
-from segments.src.propagation import Propagation
-from segments.src.cluster import Cluster
-from segments.src.primitives import Segment, SegmentTechnique, SurfacePoint
-from segments.src.sampler_types import Sampler
+from segments.propagation import Propagation
+from segments.cluster import Cluster
+from segments.primitives import Segment, SegmentTechnique, SurfacePoint
+from segments.sampler_types import Sampler
 from tests.utils import (
     make_surface_point,
     make_surface_point_with_mock_bsdf,

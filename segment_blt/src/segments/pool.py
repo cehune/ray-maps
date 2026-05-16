@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from primitives import *
+from segments.primitives import *
 
 @dataclass
 class SegmentPool:

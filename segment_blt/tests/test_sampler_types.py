@@ -1,5 +1,5 @@
-from segments.src.sampler_types import SequentialSampler
-from segments.tests.utils import make_segment, make_surface_point_with_mock_bsdf, straight_chain
+from segments.sampler_types import SequentialSampler
+from segment_blt.tests.utils import make_segment, make_surface_point_with_mock_bsdf, straight_chain
 import drjit as dr
 import pytest
 import mitsuba as mi

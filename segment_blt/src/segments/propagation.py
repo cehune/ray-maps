@@ -1,7 +1,7 @@
-from segments.src.cluster import Cluster
-from segments.src.primitives import SurfacePoint, Segment
-from segments.src.primitives import SegmentTechnique
-from segments.src.sampler_types import Sampler
+from segments.cluster import Cluster
+from segments.primitives import SurfacePoint, Segment
+from segments.primitives import SegmentTechnique
+from segments.sampler_types import Sampler
 import drjit as dr
 import mitsuba as mi
 import math

@@ -1,6 +1,6 @@
 import mitsuba as mi
 import drjit as dr
-from primitives import Segment, SegmentTechnique
+from segments.primitives import Segment, SegmentTechnique
 from abc import ABC, abstractmethod
 
 
