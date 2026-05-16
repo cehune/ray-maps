@@ -1,8 +1,13 @@
 import pytest
 import mitsuba as mi
-from segments.src.primitives import Segment, SurfacePoint, make_endpoint_si
+from segments.primitives import Segment, SurfacePoint, make_endpoint_si, SegmentTechnique
 from unittest.mock import MagicMock
-from segments.src.cluster import Cluster
+from segments.cluster import Cluster
+import numpy as np
+
+class ZeroRng:
+    def uniform(self, low, high, size):
+        return np.zeros(size)
 
 @pytest.fixture
 def simple_scene():
@@ -135,4 +140,30 @@ def straight_chain():
         x=make_surface_point_with_mock_bsdf(0, 0, 2, 0, 0, 1),
         y=make_surface_point_with_mock_bsdf(0, 0, 3, 0, 0, 1),
     )
+    return s0, s1, s2
+
+def _make_chain():
+    # segments travel along x-axis, so normals must have x-component
+    # use (1,0,0) normals so dot(n, dir) = 1
+    s0 = make_segment(
+        x=make_surface_point(0.0,  0, 0, 1, 0, 0, is_camera=True),
+        y=make_surface_point_with_mock_bsdf(0.32, 0, 0, 1, 0, 0),
+        technique=SegmentTechnique.CAMERA,
+    )
+    s1 = make_segment(
+        x=make_surface_point_with_mock_bsdf(0.33, 0, 0, 1, 0, 0),  # near s0.y
+        y=make_surface_point_with_mock_bsdf(0.65, 0, 0, 1, 0, 0),
+        technique=SegmentTechnique.CAMERA,
+    )
+    s2 = make_segment(
+        x=make_surface_point_with_mock_bsdf(0.66, 0, 0, 1, 0, 0),  # near s1.y
+        y=make_surface_point_with_mock_bsdf(0.9,  0, 0, 1, 0, 0),
+        technique=SegmentTechnique.CAMERA,
+    )
+    # s2 emits — after init s2.radiance_in=1
+    # k=1: s1 gathers from s2 → s1.radiance_out > 0
+    # k=2: s0 gathers from s1 (now has radiance) → s0.radiance_out > 0
+    s2.Le = mi.Color3f(1.0)
+    for s in [s0, s1, s2]:
+        s.mmis_weight = 1.0
     return s0, s1, s2

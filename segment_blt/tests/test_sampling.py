@@ -1,6 +1,6 @@
 import mitsuba as mi
 import drjit as dr
-from segments.src.segment_gen_sampler import * 
+from segments.segment_gen_sampler import * 
 
 def test_light_path_returns_segments():
     """sample_light_path returns a non-empty list of Segment objects"""

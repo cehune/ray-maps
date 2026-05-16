@@ -1,15 +1,16 @@
-from segments.src.cluster import Cluster
-from segments.src.primitives import SurfacePoint, Segment
-from segments.src.primitives import SegmentTechnique
-from segments.src.sampler_types import Sampler
+from segments.cluster import Cluster
+from segments.primitives import SurfacePoint, Segment
+from segments.primitives import SegmentTechnique
+from segments.sampler_types import Sampler
 import drjit as dr
 import mitsuba as mi
 import math
 
 class Propagation:
-    def __init__(self, kernel_radius, kernel_weight):
+    def __init__(self, kernel_radius, kernel_weight, num_prop_iterations = 4):
         self.kernel_radius = kernel_radius
         self.kernel_weight = kernel_weight
+        self.num_prop_iterations = num_prop_iterations
         self.update_kernel_val()
 
     def _update_kernel(self):
@@ -54,10 +55,16 @@ class Propagation:
                 continue
             if which_end == 0:  # y-endpoint of seg is near the x of the next
                 next_seg: Segment = cluster.segments[next_idx]
+                if next_seg.mmis_weight == 0.0:  # guard before kernel check
+                    continue
                 if self.kernel_check_disc(segment.y, next_seg.x):
-                    sampler = samplers[next_seg.technique]
+                    sampler = samplers.get(next_seg.technique)
+                    if sampler is None:
+                        continue
                     if sampler.technique_type == SegmentTechnique.CAMERA:
                         f = sampler.shift_invariant_bsdf(segment, next_seg)
+                        # print(f"bsdf: {f}, geom: {next_seg.geom_term}, mmis: {next_seg.mmis_weight}, kernel: {self.kernel_val}, rad: {next_seg.radiance_in}")
+                        
                         out += next_seg.mmis_weight * self.kernel_val * f * next_seg.geom_term * next_seg.radiance_in
         # TODO: Light
 
@@ -65,11 +72,26 @@ class Propagation:
         
     def propagate_all_segments(self, cluster: Cluster, samplers):
         # should be called once per iteration
-        for seg_idx, segment in enumerate(cluster.segments):
-            if segment.x.is_camera or segment.x.is_light:
-                continue
-                
+        for seg_idx, segment in enumerate(cluster.segments):                
             segment.radiance_out = self.propagate_segment(segment, seg_idx, cluster, samplers)
         
+    def swap_segment_radiance(self, cluster: Cluster):
+        for segment in cluster.segments:
+            if segment.x.is_camera or segment.x.is_light:
+                segment.radiance_in = segment.Le
+                continue
+            segment.radiance_in = segment.radiance_out
+            segment.radiance_out = mi.Color3f(0.0)
+
+    def iterate_propogation(self, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
+        for segment in cluster.segments:
+            segment.radiance_in = segment.Le
+        
+        for _ in range(self.num_prop_iterations):
+            self.propagate_all_segments(cluster, samplers)
+            self.swap_segment_radiance(cluster)
+        
         self._update_kernel()
+
+
         

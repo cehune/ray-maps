@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "segments"
 version = "0.1.0"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

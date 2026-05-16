@@ -53,6 +53,8 @@ class Segment:
     wi_local: mi.Vector3f = None
     throughput: mi.Color3f = field(default_factory=lambda: mi.Color3f(1.0))
     # radiance in is the Le term, radiance out is found via the integral
+    # but we swap radiance in and out during prop, so need to store le separately
+    Le: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # incoming radiance before prop
     radiance_in: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # incoming radiance before prop
     radiance_out: mi.Color3f = field(default_factory=lambda: mi.Color3f(0.0)) # after propogation
     # probability equation (15)

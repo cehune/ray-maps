@@ -1,5 +1,5 @@
-from segments.src.cluster import Cluster
-from segments.src.primitives import SegmentTechnique
+from segments.cluster import Cluster
+from segments.primitives import SegmentTechnique
 class MMIS:
     """
     What are technique spaces? we have 2, fromt he camera and 

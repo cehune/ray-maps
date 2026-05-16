@@ -1,12 +1,12 @@
-from pool import SegmentPool, SegmentPoolV2
-from segments.src.segment_gen_sampler import *
-from primitives import *
+from segments.pool import SegmentPool, SegmentPoolV2
+from segments.segment_gen_sampler import *
+from segments.primitives import *
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
-from segments.src.cluster import Cluster
-from segments.src.mmis import MMIS
-from segments.src.sampler_types import *
-from segments.src.propagation import Propagation
+from segments.cluster import Cluster
+from segments.mmis import MMIS
+from segments.sampler_types import *
+from segments.propagation import Propagation
 
 import numpy as np
 

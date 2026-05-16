@@ -4,15 +4,17 @@ import numpy as np
 import mitsuba as mi
 import drjit as dr
 from unittest.mock import MagicMock
-from segments.src.propagation import Propagation
-from segments.src.cluster import Cluster
-from segments.src.primitives import Segment, SegmentTechnique, SurfacePoint
-from segments.src.sampler_types import Sampler
+from segments.propagation import Propagation
+from segments.cluster import Cluster
+from segments.primitives import Segment, SegmentTechnique, SurfacePoint
+from segments.sampler_types import Sampler
 from tests.utils import (
     make_surface_point,
     make_surface_point_with_mock_bsdf,
     make_segment,
-    make_aabb
+    make_aabb,
+    _make_chain,
+    ZeroRng
 )
 
 mi.set_variant("scalar_rgb")
@@ -30,8 +32,7 @@ def make_clustered(segments, voxel_size=0.5):
     c = Cluster(c=5)
     c.set_scene_aabb(aabb)
     c.set_segments(segments)
-    rng = np.random.default_rng(0)
-    c.cluster(rng, voxel_size=voxel_size)
+    c.cluster(ZeroRng(), voxel_size=voxel_size)
     return c
 
 
@@ -355,3 +356,132 @@ class TestPropagateAllSegments:
         prop.propagate_all_segments(cluster, camera_samplers())
 
         assert float(s1.radiance_out.x) == pytest.approx(0.0, abs=1e-8)
+
+class TestIteratePropagation:
+
+    def test_radiance_in_initialised_from_le(self):
+        """
+        Before any propagation pass, radiance_in must equal Le for all segments.
+        iterate_propagation initialises this on line 9-10 of Algorithm 1.
+        """
+        s0, s1, s2= _make_chain()
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=0)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        assert float(s2.radiance_in.x) == pytest.approx(1.0, abs=1e-6), \
+            "s2.radiance_in must equal Le after init"
+        assert float(s1.radiance_in.x) == pytest.approx(0.0, abs=1e-6)
+        assert float(s0.radiance_in.x) == pytest.approx(0.0, abs=1e-6)
+
+    def test_single_iteration_propagates_one_hop(self):
+        """
+        After k=1: s1 has Le=1, so segments in s1's y-cluster receive it.
+        s2.x is in the same cluster as s1.y → s2 should have non-zero radiance_in.
+        s3 is one hop further — it should NOT receive anything yet
+        (its radiance_in comes from s2, which was 0 at the start of k=1).
+        """
+        s0, s1, s2 = _make_chain()
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        for i, s in enumerate([s0, s1, s2]):
+            print(f"s{i}.x={float(s.x.p.x):.3f} cluster={cluster.endpoint_to_cluster[i*2+0]}")
+            print(f"s{i}.y={float(s.y.p.x):.3f} cluster={cluster.endpoint_to_cluster[i*2+1]}")
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=1)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        assert float(s1.radiance_in.x) > 0.0
+        # s0 has not received yet
+        assert float(s0.radiance_in.x) == pytest.approx(0.0, abs=1e-6)
+
+    def test_two_iterations_propagates_two_hops(self):
+        s0, s1, s2 = _make_chain()
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=2)
+        prop.iterate_propogation(cluster, camera_samplers())
+        print("FINAL s0.radiance_out:", s0.radiance_out)
+        print("FINAL s1.radiance_out:", s1.radiance_out)
+        print("FINAL s2.radiance_out:", s2.radiance_out)
+        # k=1: s1 gets from s2; k=2: s0 gets from s1
+        assert float(s0.radiance_out.x) > 0.0
+
+    def test_more_iterations_means_more_radiance_at_far_segment(self):
+        """
+        With k=2, s3 receives radiance. With k=3, s3 also receives the
+        contribution that bounced through an extra hop, so its radiance_in
+        must be >= the k=2 case.
+        """
+        s0, s1, s2= _make_chain()
+        cluster_2 = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop_2 = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=2)
+        prop_2.iterate_propogation(cluster_2, camera_samplers())
+        r_k2 = float(s2.radiance_in.x)
+
+        s0, s1, s2= _make_chain()
+        cluster_3 = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop_3 = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=3)
+        prop_3.iterate_propogation(cluster_3, camera_samplers())
+        r_k3 = float(s0.radiance_in.x)
+
+        assert r_k3 >= r_k2, \
+            f"More iterations must not reduce far radiance: k=2 gave {r_k2}, k=3 gave {r_k3}"
+
+    def test_zero_le_gives_zero_radiance_everywhere(self):
+        """
+        If no segment has Le > 0, no radiance should propagate regardless of k.
+        """
+        s0, s1, s2 = _make_chain()
+        s1.Le = mi.Color3f(0.0)  # override the emission
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=4)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        for seg, name in [(s1, "s1"), (s2, "s2")]:
+            assert float(seg.radiance_in.x) == pytest.approx(0.0, abs=1e-8), \
+                f"{name}.radiance_in must be zero with no emission"
+
+    def test_kernel_shrinks_once_per_iterate_call(self):
+        """
+        _update_kernel is called once at the end of iterate_propagation,
+        regardless of num_prop_iterations. Kernel must shrink exactly once.
+        """
+        prop = Propagation(kernel_radius=1.0, kernel_weight=0.5, num_prop_iterations=4)
+        s0 = make_segment(
+            x=make_surface_point(0, 0, 0, 0, 0, 1, is_camera=True),
+            y=make_surface_point_with_mock_bsdf(0.1, 0, 0, 0, 0, 1),
+        )
+        cluster = make_clustered([s0], voxel_size=0.1)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        assert prop.kernel_radius == pytest.approx(0.5, rel=1e-6), \
+            "Kernel radius must shrink by kernel_weight exactly once per iterate call"
+        expected_val = 1.0 / (math.pi * 0.5 ** 2)
+        assert prop.kernel_val == pytest.approx(expected_val, rel=1e-6), \
+            "kernel_val must reflect updated radius"
+
+    def test_swap_resets_radiance_out_to_zero(self):
+        """
+        After swap, radiance_out must be zero for all interior segments —
+        ready for the next propagation pass to write fresh values.
+        """
+        s0, s1, s2 = _make_chain()
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=2)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        for seg, name in [(s1, "s1"), (s2, "s2")]:
+            assert float(seg.radiance_out.x) == pytest.approx(0.0, abs=1e-8), \
+                f"{name}.radiance_out must be zero after final swap"
+
+    def test_camera_le_stays_as_radiance_in_after_swap(self):
+        """
+        Camera-origin segments must always have radiance_in = Le after swap,
+        not whatever radiance_out was written (which should be zero anyway).
+        """
+        s0, s1, s2 = _make_chain()
+        s0.Le = mi.Color3f(0.5)
+        cluster = make_clustered([s0, s1, s2], voxel_size=0.1)
+        prop = Propagation(kernel_radius=0.5, kernel_weight=0.7, num_prop_iterations=2)
+        prop.iterate_propogation(cluster, camera_samplers())
+
+        assert float(s0.radiance_in.x) == pytest.approx(0.5, abs=1e-6), \
+            "Camera-origin segment radiance_in must always equal Le"
