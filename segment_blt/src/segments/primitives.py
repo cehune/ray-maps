@@ -82,7 +82,7 @@ class Segment:
             (1.0 / (self.len * self.len))
         
         wi_world = dr.normalize(self.x.p - self.y.p)
-        self.wi_local = mi.Frame3f(self.x.n).to_local(wi_world)
+        self.wi_local = mi.Frame3f(self.y.n).to_local(wi_world)
         self.y.si.wi = self.wi_local
 
         

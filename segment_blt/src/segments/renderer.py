@@ -7,6 +7,7 @@ from segments.cluster import Cluster
 from segments.mmis import MMIS
 from segments.sampler_types import *
 from segments.propagation import Propagation
+from segments.pair_cache import build_pair_cache
 
 import numpy as np
 
@@ -21,10 +22,9 @@ class Renderer:
     
     variant: str = 'scalar_rgb'
 
-    def render_iterate_(self, scene, sensor, sampler, height, width):
-        segment_pool = SegmentPool()
+    def render_iterate_(self, scene, sensor, sampler, height, width, iteration=0):
+        segment_pool = SegmentPoolV2()
         camera_first_segments = []
-
         # 1. sample segments
         for y in range(height):
             for x in range(width):
@@ -50,51 +50,48 @@ class Renderer:
         # 2. cluster
         cluster = Cluster()
         cluster.set_scene_aabb(scene.bbox())
-        cluster.set_segments(segment_pool.segments)  # flat list
-        cluster.cluster(np.random.default_rng(seed=42))
+        cluster.set_segments(segment_pool.paths)  # flat list
+        cluster.cluster(np.random.default_rng(seed=iteration))
 
-        # 3. initialise radiance_in from Le (set at sampling time on each segment)
-        # Le is already on each segment — just copy to radiance_in
-        for segment in segment_pool.segments:
-            segment.radiance_in = segment.Le
+        # 2.5. precompute all valid (i,j) pairs — BSDF and PDF evaluated once here,
+        #    reused across all MMIS and propagation iterations below
+        pair_cache = build_pair_cache(cluster, self.propagation.kernel_radius, self.samplers)
 
-        # 4. MMIS weights
-        self.mmis.compute_all_mmis_weights(cluster, self.samplers)
+        # 3. MMIS weights — pure numpy using cached conditional PDFs
+        self.mmis.compute_all_mmis_weights_vec(cluster, pair_cache)
 
-        # 5. propagate
-        self.propagation.iterate_propogation(cluster, self.samplers)
+        # 4. propagate — pure numpy inner loop using cached BSDF values
+        self.propagation.iterate_propogation_vec(cluster, pair_cache)
 
-        # 6. final gather — only camera-connected segments contribute W_rho
+        # 5. final gather
         accum = np.zeros((height * width, 3))
         for pixel_idx, first_seg in enumerate(camera_first_segments):
             if first_seg is None:
                 continue
             # W_rho * G * <L> * mmis_weight
-            val = first_seg.throughput * first_seg.geom_term * \
+            val = first_seg.throughput  * \
                   first_seg.radiance_in * first_seg.mmis_weight
             accum[pixel_idx] = [float(val.x), float(val.y), float(val.z)]
 
         return accum.reshape(height, width, 3)
 
-    def render_iterate_loop(self, scene, height=128, width=128, n_iterations=64):
+    def render_iterate_loop(self, scene, height=128, width=128, n_iterations=8):
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
 
         self.mmis        = MMIS()
         self.propagation = Propagation(
-            kernel_radius=4 * self._avg_pixel_footprint(sensor, height, width),
-            kernel_weight=0.67 ** (1 / 1),  # alpha=0.67 per Knaus-Zwicker
+            kernel_radius=16,
+            kernel_weight=0.67,  # alpha=0.67 per Knaus-Zwicker
             num_prop_iterations=4,
         )
         self.samplers = Sampler.build_registry(SequentialSampler())
 
         for i in range(n_iterations):
+            print(f"iteration {i}/{n_iterations} — r={self.propagation.kernel_radius:.2f}")
             sampler = mi.load_dict({'type': 'independent', 'sample_count': 1})
             sampler.seed(i, width * height)
-            accum += self.render_iterate_(scene, sensor, sampler, height, width)
-
-            if i % 8 == 0:
-                print(f'  iteration {i}/{n_iterations}')
+            accum += self.render_iterate_(scene, sensor, sampler, height, width, iteration=i)
 
         return accum / n_iterations
 
@@ -105,14 +102,13 @@ class Renderer:
         return max(1.0 / height, 1.0 / width) * 4.0
 
     def save_render_by_scene_path(self, scene_path, save_file_path="output.png",
-                                   width=128, height=128, n_iterations=32):
+                                   width=128, height=128, n_iterations=64):
         mi.set_variant(self.variant)
         scene = mi.load_file(scene_path)
         image = self.render_iterate_loop(scene, height, width, n_iterations)
+        #image = self.render(scene, 128, 128, 4)
         plt.imsave(save_file_path, np.clip(image ** (1 / 2.2), 0, 1))
         print(f'saved {save_file_path}')
-
-
     
     def render(self, scene, width=512, height=512, spp=64):
         sensor  = scene.sensors()[0]

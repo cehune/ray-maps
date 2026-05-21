@@ -13,6 +13,7 @@ class Sampler(ABC):
 
 class SequentialSampler(Sampler):
     technique_type = SegmentTechnique.CAMERA
+
     # should just do the pdf move from mmis
     def conditional_pdf(self, segment: Segment, auxiliary: Segment) -> float:
         """
@@ -37,22 +38,44 @@ class SequentialSampler(Sampler):
 
         if auxiliary.y.is_camera or auxiliary.y.is_light:
             return 0.0
-        
-        segment_diff = segment.y.p - segment.x.p
+
+        len_sq = float(segment.len) ** 2
+        if len_sq < 1e-10:
+            return 0.0
 
         # cant store outgoing direction local to the segment because we assume it 
         # happens at the auxiliary endpoint, using auxiliary.y.n, check with Wenyou
-        wo_world = segment_diff * (1.0 / segment.len)
+        wo_world = dr.normalize(segment.y.p - auxiliary.y.p)  # unit vector x->y, already stored on segment
         wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
 
         # pw (s'|yi, si) bsdf sampling pdf to next direction (just along si+1)
         # this is along x to y
-        pw = auxiliary.y.si.bsdf().eval_pdf(mi.BSDFContext(), auxiliary.y.si, wo_local)
+        # set wi correctly on a copy of auxiliary.y.si
+        si = auxiliary.y.si
+        si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
 
-        cosine = dr.abs(dr.dot(segment.y.n, wo_world))
+        bsdf = si.bsdf()
+        if bsdf is None:
+            return 0.0
 
-        return pw * cosine / (segment.len ** 2)
-    
+        pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
+        try:
+            pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
+        except (TypeError, IndexError):
+            pw = float(pw_result)
+
+        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
+
+        # cos at segment.y (incoming side) — the area measure conversion
+        cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
+
+        if cos_at_aux_y < 1e-6:
+            return 0.0
+
+        # eval_pdf returns solid-angle PDF directly (e.g. cos/π for diffuse) — no conversion needed
+        return pw * cos_at_seg_y / len_sq
+
+
     """
     KLEEP IN MIND THE LOGIC IS DIFF FROM THE PDF
     EARLIER IN MMIS WE WERE FINDING WHICH MIGHT LEAD TO OUR ENDPOINT IN THE CLUISTER
@@ -65,15 +88,26 @@ class SequentialSampler(Sampler):
         f_r(s, s') via shift-invariant approximation, Eq (6).
         Evaluate BSDF at y of s:
           wi = -seg.dir  (incoming at y, from x)
-          wo = direction from y toward y' of aux_seg
+          wo = direction from y toward y' of next_seg
+
+        mitsuba's bsdf.eval returns f_r * cos(theta_o), but the propagation formula
+        needs the pure f_r — both cosines are already carried by G(s').
+        Divide by cos(theta_o) to recover f_r.
         """
+        wi_world = -seg.dir
         wo_world = dr.normalize(next_seg.y.p - seg.y.p)
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
         bsdf = si.bsdf()
         if bsdf is None:
             return mi.Color3f(0.0)
-        return bsdf.eval(si, wo_local)
+
+        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+        if cos_o < 1e-6:
+            return mi.Color3f(0.0)
+        return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o

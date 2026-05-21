@@ -1,5 +1,7 @@
 from segments.cluster import Cluster
 from segments.primitives import SegmentTechnique
+import numpy as np
+
 class MMIS:
     """
     What are technique spaces? we have 2, fromt he camera and 
@@ -64,3 +66,29 @@ class MMIS:
                 segment.mmis_weight = 1.0
                 continue
             segment.mmis_weight = self.compute_mmis_weight(segment, seg_idx, cluster, samplers)
+
+    def compute_all_mmis_weights_vec(self, cluster, pair_cache) -> None:
+        """
+        Vectorized MMIS weight computation using a prebuilt PairCache.
+
+        All conditional PDF values are already cached in pair_cache.mmis_pdf.
+        This method just sums them per segment and inverts — pure numpy, no BSDF calls.
+        """
+        S = len(cluster.segments)
+        p_sum = np.zeros(S, dtype=np.float64)
+
+        # trivial segments (camera-origin or light-origin x) get weight 1.0 directly
+        p_sum[pair_cache.trivial_mmis] = 1.0   # sentinel: will be inverted to 1.0
+
+        # accumulate conditional PDFs for non-trivial segments
+        if len(pair_cache.mmis_j) > 0:
+            np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
+
+        # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable)
+        nz = p_sum > 0.0
+        weights = np.where(nz, 1.0 / p_sum, 0.0)
+
+        # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 
+        for seg_idx, seg in enumerate(cluster.segments):
+            seg.mmis_weight = float(weights[seg_idx])
+        

@@ -166,6 +166,8 @@ class TestCluster:
         class ZeroRng:
             def uniform(self, low, high, size):
                 return np.zeros(size)
+            def integers(self, low, high):
+                return 0
 
         s0 = make_segment(
             x=make_surface_point(5.0, 5.0, 5.0,  0, 1, 0),

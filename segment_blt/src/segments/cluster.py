@@ -10,7 +10,7 @@ class Cluster:
     """
     segments: list = field(default_factory=list)
     scene_aabb: mi.BoundingBox3f = None
-    c: int = 5 # expected number of points / voxel
+    c: int = 10 # expected number of points / voxel
 
     # need these to know which segment each segment endpoint actually belongs to
     # kinda mimics the c++ pointer method, once we convert to c++ just use pointers lol
@@ -48,17 +48,33 @@ class Cluster:
         the packing method uses 20 bits per axis and 3 per octant which means we 
         have ±524288 voxels per so that should be solid for now imo its just speedup
         """
+
+        iter_seed = int(rng.integers(0, 2**31))
+
+        quant = np.round(positions / (self.voxel_size * 1e-3)).astype(np.int64)  # (N, 3)
+
         # jitter in voxel units: max displacement r/2 in each axis
         # this randomizes boundary assignment each iteration
-        jitter   = rng.uniform(-0.5, 0.5, size=positions.shape) * self.voxel_size # (N, 3)
-        jittered = positions + jitter    
+        def hash3(qx, qy, qz, seed):
+            x = qx * np.int64(2654435761) ^ qy * np.int64(805459861) ^ qz ^ np.int64(seed)
+            x = ((x >> np.int64(16)) ^ x) * np.int64(0x45d9f3b37)
+            x = ((x >> np.int64(16)) ^ x) * np.int64(0x45d9f3b37)
+            return (x >> np.int64(16)) ^ x
 
-        # floor to get the integer version of the coords and then get octants
-        coords  = np.floor(jittered / self.voxel_size).astype(np.int64)   # (N, 3)
-        octants = self._compute_octants(normals)    # (N,)
+        hx = hash3(quant[:, 0], quant[:, 1], quant[:, 2], iter_seed)
+        hy = hash3(quant[:, 1], quant[:, 2], quant[:, 0], iter_seed + 1)
+        hz = hash3(quant[:, 2], quant[:, 0], quant[:, 1], iter_seed + 2)
 
-        # shift coords to non-negative for safe bit packing
-        offset = 1 << 19   
+        scale = self.voxel_size * 0.5 / float(2**63)
+        jitter = np.stack([
+            hx.astype(np.float64) * scale,
+            hy.astype(np.float64) * scale,
+            hz.astype(np.float64) * scale,
+        ], axis=1)
+
+        jittered = positions + jitter
+        coords   = np.floor(jittered / self.voxel_size).astype(np.int64)
+        octants  = self._compute_octants(normals)
 
         # now we fill  
         OFFSET = np.int64(1 << 19)
