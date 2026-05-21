@@ -85,7 +85,7 @@ class MMIS:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
 
         # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable)
-        nz = p_sum > 0.0
+        nz = p_sum > 0.0000001
         weights = np.where(nz, 1.0 / p_sum, 0.0)
 
         # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 

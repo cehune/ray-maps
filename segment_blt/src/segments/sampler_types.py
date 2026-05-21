@@ -39,13 +39,19 @@ class SequentialSampler(Sampler):
         if auxiliary.y.is_camera or auxiliary.y.is_light:
             return 0.0
 
-        len_sq = float(segment.len) ** 2
+        # Distance from auxiliary.y to segment.y — this is the connection vector
+        # used in the area-measure conversion.  For adjacent segments in the
+        # sequential model auxiliary.y == segment.x so this equals segment.len,
+        # but using the actual distance is correct for arbitrary auxiliaries in
+        # the same cluster.
+        delta  = segment.y.p - auxiliary.y.p
+        len_sq = float(dr.squared_norm(delta))
         if len_sq < 1e-10:
             return 0.0
 
-        # cant store outgoing direction local to the segment because we assume it 
+        # cant store outgoing direction local to the segment because we assume it
         # happens at the auxiliary endpoint, using auxiliary.y.n, check with Wenyou
-        wo_world = dr.normalize(segment.y.p - auxiliary.y.p)  # unit vector x->y, already stored on segment
+        wo_world = dr.normalize(delta)   # unit connection vector from auxiliary.y → segment.y
         wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
 
         # pw (s'|yi, si) bsdf sampling pdf to next direction (just along si+1)

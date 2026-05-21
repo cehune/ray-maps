@@ -398,13 +398,16 @@ class TestHelp:
 
         assert r1 > 0, "one-hop gave zero — propagation is broken"
         assert r2 > 0, "two-hop gave zero — propagation is broken"
-        # In the 1-hop case (2 segments), s_light has 1 MMIS auxiliary → weight = π.
-        # In the 2-hop case (3 segments), s_light has 2 auxiliaries (s_pred.y and s_mid.y
-        # land in the same single cluster) → MMIS weight = π/2.
-        # This halves s_mid's radiance_in after hop 1, so s_pred receives half as much in
-        # hop 2: r2 ≈ 0.5 * r1.
-        assert abs(r2/r1 - 0.5) < 0.1, \
-            f"r1={r1:.4e} r2={r2:.4e} ratio={r2/r1:.4f}, expected ≈ 0.5 (MMIS dilution)"
+        # Both tests use make_minimal_cluster which puts ALL endpoints in one cluster.
+        # With the corrected conditional_pdf (distance = dist(aux.y, seg.y)):
+        #   1-hop: s_light has 1 auxiliary (s_pred.y, dist=1).  mmis_w = π.
+        #          r1 = π * (1/π) * 1 * Le = 1.
+        #   2-hop: s_light has 2 auxiliaries: s_pred.y (dist=2 → pdf=1/(4π)) and
+        #          s_mid.y (dist=1 → pdf=1/π).  p_sum = 5/(4π), mmis_w = 4π/5.
+        #          s_pred also receives DIRECTLY from s_light each hop (single cluster),
+        #          plus indirectly through s_mid → r2 = 4/5 + 4/5 = 8/5 = 1.6.
+        assert abs(r2/r1 - 1.6) < 0.15, \
+            f"r1={r1:.4e} r2={r2:.4e} ratio={r2/r1:.4f}, expected ≈ 1.6"
 
     def test_mmis_balanced_populations(self, scene):
         """n_aux == n_cont: with balanced populations result must equal Le (G/p=π cancels fr=1/π)."""

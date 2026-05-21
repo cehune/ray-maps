@@ -76,6 +76,20 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
     mmis_t_list: list[int] = []
     trivial_set: set[int] = set()
 
+    # PRE-PASS: mark camera-origin and light-origin segments as trivial before
+    # the cluster loop.  These always get mmis_weight=1.0 regardless of cluster
+    # structure.  We cannot rely on the cluster loop body for this because a
+    # camera-origin segment's x-cluster (the camera position) typically has no
+    # y-endpoints, causing the early-continue guard to fire and skip the body —
+    # leaving the segment absent from trivial_set with mmis_weight=0.
+    #
+    # Light-terminal segments (y.is_light) are intentionally NOT pre-marked here:
+    # they should accumulate conditional PDFs from auxiliaries in their cluster
+    # and receive a proper MMIS weight (1/p_sum), not be pinned to 1.0.
+    for seg_idx, seg in enumerate(segs):
+        if seg.x.is_camera or seg.x.is_light:
+            trivial_set.add(seg_idx)
+
     for _, (start, end) in enumerate(cluster.cluster_ranges):
         flat_indices = cluster.sorted_indices[start:end]
         meta = cluster.endpoint_metadata[flat_indices]  # (K, 2): (seg_idx, which_end)
@@ -110,8 +124,8 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
         # for each j (x in cluster), t (y in cluster) is a potential auxiliary.
         for j_idx in x_segs:
             seg_j = segs[j_idx]
-            if seg_j.x.is_camera or seg_j.x.is_light:
-                trivial_set.add(int(j_idx))
+            # trivial segments were already added in the pre-pass; skip them here.
+            if int(j_idx) in trivial_set:
                 continue
             sampler_j = samplers.get(seg_j.technique)
             if sampler_j is None:
