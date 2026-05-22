@@ -45,6 +45,8 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
         # since segments are disocnnected, only use a local weight
         local_weight = bsdf_weight
 
+        # TODO: doesn't actually matter right now, but q should actually be 
+        # based on an accumulated weight, not local
         # russian roulette
         if i >= rr_start_depth:
             q = min(0.97, luminance_rgb(local_weight))
