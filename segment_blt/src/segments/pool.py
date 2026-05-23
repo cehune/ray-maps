@@ -29,9 +29,9 @@ class SegmentPool:
 class SegmentPoolV2:
     paths: list
     def __init__(self):
-        self.segments = []
+        self.paths = []
     
     def add_path(self, path):
-        self.segments.extend(path)
+        self.paths.extend(path)
     def clear(self):
-        self.segments.clear()
+        self.paths.clear()

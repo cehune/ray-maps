@@ -9,6 +9,10 @@ class ZeroRng:
     def uniform(self, low, high, size):
         return np.zeros(size)
 
+    def integers(self, low, high):
+        """Return a deterministic zero seed for testing."""
+        return 0
+
 @pytest.fixture
 def simple_scene():
     """Cornell-box-like scene with a visible area light."""

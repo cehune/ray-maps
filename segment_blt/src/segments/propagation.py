@@ -5,16 +5,22 @@ from segments.sampler_types import Sampler
 import drjit as dr
 import mitsuba as mi
 import math
+from segments.mmis import MMIS
 
 class Propagation:
-    def __init__(self, kernel_radius, kernel_weight, num_prop_iterations = 4):
+    def __init__(self, kernel_radius, kernel_weight, num_prop_iterations = 12):
+        self.initial_radius = kernel_radius
         self.kernel_radius = kernel_radius
-        self.kernel_weight = kernel_weight
+        self.kernel_weight = kernel_weight   # alpha in Knaus-Zwicker: 0.67
         self.num_prop_iterations = num_prop_iterations
+        self._iteration = 1                  # current render iteration (1-indexed)
         self.update_kernel_val()
 
     def _update_kernel(self):
-        self.kernel_radius *= self.kernel_weight
+        # Power-law decay: r_n = r_0 * n^(-alpha/2)  (Knaus-Zwicker 2011, Eq. 5)
+        # Exponential decay (r *= weight) collapses the kernel to zero by ~64 iterations.
+        self._iteration += 1
+        self.kernel_radius = self.initial_radius * (self._iteration ** (-self.kernel_weight / 2.0))
         self.update_kernel_val()
 
     def kernel_check_disc(self, seg_endpoint: SurfacePoint, next_endpoint: SurfacePoint):
@@ -57,17 +63,16 @@ class Propagation:
                 next_seg: Segment = cluster.segments[next_idx]
                 if next_seg.mmis_weight == 0.0:  # guard before kernel check
                     continue
-                if self.kernel_check_disc(segment.y, next_seg.x):
-                    sampler = samplers.get(next_seg.technique)
-                    if sampler is None:
-                        continue
-                    if sampler.technique_type == SegmentTechnique.CAMERA:
-                        f = sampler.shift_invariant_bsdf(segment, next_seg)
-                        # print(f"bsdf: {f}, geom: {next_seg.geom_term}, mmis: {next_seg.mmis_weight}, kernel: {self.kernel_val}, rad: {next_seg.radiance_in}")
-                        
-                        out += next_seg.mmis_weight * self.kernel_val * f * next_seg.geom_term * next_seg.radiance_in
+                if not self.kernel_check_disc(segment.y, next_seg.x):
+                    continue
+                sampler = samplers.get(next_seg.technique)
+                if sampler is None:
+                    continue
+                if sampler.technique_type == SegmentTechnique.CAMERA:
+                    f = sampler.shift_invariant_bsdf(segment, next_seg)
+                    contrib = next_seg.mmis_weight * f * next_seg.geom_term * next_seg.radiance_in
+                    out += contrib
         # TODO: Light
-
         return out
         
     def propagate_all_segments(self, cluster: Cluster, samplers):
@@ -77,21 +82,73 @@ class Propagation:
         
     def swap_segment_radiance(self, cluster: Cluster):
         for segment in cluster.segments:
-            if segment.x.is_camera or segment.x.is_light:
-                segment.radiance_in = segment.Le
-                continue
-            segment.radiance_in = segment.radiance_out
+            if segment.y.is_light:
+                segment.radiance_in = segment.Le  # pin — never overwrite with radiance_out
+            else:
+                segment.radiance_in = segment.radiance_out
             segment.radiance_out = mi.Color3f(0.0)
 
     def iterate_propogation(self, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
         for segment in cluster.segments:
             segment.radiance_in = segment.Le
-        
+
         for _ in range(self.num_prop_iterations):
             self.propagate_all_segments(cluster, samplers)
             self.swap_segment_radiance(cluster)
-        
+
         self._update_kernel()
 
+    def iterate_propogation_vec(self, cluster: Cluster, pair_cache):
+        """
+        Vectorized propagation using a prebuilt PairCache.
 
+        BSDF values (prop_fr) are already cached.  Each of the num_prop_iterations
+        passes is pure numpy: one gather of radiance_in + np.add.at accumulation.
+        No Mitsuba/drjit calls happen inside this method.
+        """
+        import numpy as np
+
+        segs = cluster.segments
+        S = len(segs)
+
+        # Initial radiance_in = Le for all segments
+        Le = np.array([[float(s.Le.x), float(s.Le.y), float(s.Le.z)] for s in segs],
+                      dtype=np.float64)  # (S, 3)
+        is_light = np.array([s.y.is_light for s in segs], dtype=bool)  # (S,)
+
+        rad_in = Le.copy()
+
+        has_pairs = len(pair_cache.prop_i) > 0
+
+        if has_pairs:
+            j = pair_cache.prop_j  # (P,) source segment indices
+
+            # Extract per-segment scalars once — static across all propagation iterations
+            mmis_w = np.array([float(s.mmis_weight) for s in segs], dtype=np.float64)
+            geom   = np.array([float(s.geom_term)   for s in segs], dtype=np.float64)
+
+            # Pre-multiply BSDF with static mmis_weight and geom_term for each pair:
+            # weighted_fr[k] = prop_fr[k] * mmis_w[j[k]] * geom[j[k]]   shape (P, 3)
+            weighted_fr = pair_cache.prop_fr * (mmis_w[j] * geom[j])[:, np.newaxis]
+
+        for _ in range(self.num_prop_iterations):
+            rad_out = np.zeros((S, 3), dtype=np.float64)
+
+            if has_pairs:
+                # contrib[k] = weighted_fr[k] * rad_in[j[k]]   shape (P, 3)
+                contrib = weighted_fr * rad_in[pair_cache.prop_j]
+                np.add.at(rad_out, pair_cache.prop_i, contrib)
+
+            # Swap: light endpoints pin to Le; others advance to rad_out
+            rad_in = np.where(is_light[:, np.newaxis], Le, rad_out)
+
+        # Write final radiance_in back to segment objects
+        for seg_idx, seg in enumerate(segs):
+            seg.radiance_in = mi.Color3f(
+                float(rad_in[seg_idx, 0]),
+                float(rad_in[seg_idx, 1]),
+                float(rad_in[seg_idx, 2]),
+            )
+
+        self._update_kernel()
         

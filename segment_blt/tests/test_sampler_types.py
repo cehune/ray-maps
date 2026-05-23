@@ -103,21 +103,23 @@ class TestSequentialSampler:
         assert float(result.z) == 0.0
 
     def test_wi_is_minus_seg_dir(self):
-        """
-        wi at seg.y must be -seg.dir (light arriving from seg.x).
-        seg goes (0,0,1)->(0,0,2), dir=(0,0,1), so wi_local.z=-1.
-        """
         sampler = SequentialSampler()
         _, seg, next_seg = straight_chain()
 
         captured = {}
-        original = seg.y.si.bsdf().eval
+        mock_bsdf = seg.y.si.bsdf()
+        original_eval = mock_bsdf.eval
 
-        def capture(si, wo):
+        # bsdf.eval is called as eval(ctx, si, wo) — three args
+        def capture(ctx, si, wo):
             captured['wi'] = mi.Vector3f(si.wi)
-            return original(si, wo)
+            return original_eval(ctx, si, wo)
 
-        seg.y.si.bsdf().eval = capture
+        # patch on the mock bsdf instance, not on si.bsdf().eval
+        mock_bsdf.eval = capture
+        # make si.bsdf() always return this same mock
+        seg.y.si.bsdf = MagicMock(return_value=mock_bsdf)
+
         sampler.shift_invariant_bsdf(seg, next_seg)
 
         assert float(captured['wi'].z) == pytest.approx(-1.0, abs=1e-4)
@@ -125,21 +127,21 @@ class TestSequentialSampler:
         assert float(captured['wi'].y) == pytest.approx( 0.0, abs=1e-4)
 
     def test_wo_points_toward_next_y(self):
-        """
-        Shift-invariant approximation: x' ≈ y, so wo points y -> y'.
-        seg.y=(0,0,2), next_seg.y=(0,0,3) → wo_local.z=+1.
-        """
         sampler = SequentialSampler()
         _, seg, next_seg = straight_chain()
 
         captured = {}
-        original = seg.y.si.bsdf().eval
+        mock_bsdf = seg.y.si.bsdf()
+        original_eval = mock_bsdf.eval
 
-        def capture(si, wo):
+        # bsdf.eval is called as eval(ctx, si, wo) — three args
+        def capture(ctx, si, wo):
             captured['wo'] = mi.Vector3f(wo)
-            return original(si, wo)
+            return original_eval(ctx, si, wo)
 
-        seg.y.si.bsdf().eval = capture
+        mock_bsdf.eval = capture
+        seg.y.si.bsdf = MagicMock(return_value=mock_bsdf)
+
         sampler.shift_invariant_bsdf(seg, next_seg)
 
         assert float(captured['wo'].z) == pytest.approx(1.0, abs=1e-4)
