@@ -16,15 +16,17 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
+def _make_blt_components(scene, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
     mmis        = MMIS()
     propagation = Propagation(
         kernel_radius=kernel_radius,
         kernel_weight=kernel_weight,
         num_prop_iterations=num_prop_iterations,
     )
+    cluster = Cluster()
+    cluster.set_scene_aabb(scene.bbox())
     samplers = Sampler.build_registry(SequentialSampler())
-    return mmis, propagation, samplers
+    return cluster, mmis, propagation, samplers
 
 
 def _sample_segments(scene, sensor, sampler, height, width):
@@ -71,15 +73,6 @@ def _final_gather(camera_first_segments, height, width):
         val = first_seg.throughput * first_seg.radiance_in * first_seg.mmis_weight
         accum[pixel_idx] = [float(val.x), float(val.y), float(val.z)]
     return accum.reshape(height, width, 3)
-
-
-def _cluster_segments(scene, segment_pool, iteration):
-    cluster = Cluster()
-    cluster.set_scene_aabb(scene.bbox())
-    cluster.set_segments(segment_pool.paths)
-    cluster.cluster(np.random.default_rng(seed=iteration))
-    return cluster
-
 
 def _diag(label, cluster, pair_cache, camera_first_segments):
     """Print key diagnostic stats to help locate where radiance is lost."""
@@ -161,7 +154,7 @@ class Renderer:
     # ── 2. BLT non-vectorized (reference BLT implementation) ─────────────────
 
     def _render_iterate_nonvec(self, scene, sensor, sampler, height, width,
-                               mmis, propagation, samplers, iteration=0,
+                               cluster, mmis, propagation, samplers, iteration=0,
                                verbose=False):
         segment_pool, camera_first_segments = _sample_segments(
             scene, sensor, sampler, height, width
@@ -170,7 +163,8 @@ class Renderer:
         if not segment_pool.paths:
             return np.zeros((height, width, 3))
 
-        cluster = _cluster_segments(scene, segment_pool, iteration)
+        cluster.set_segments(segment_pool.paths)
+        cluster.cluster(np.random.default_rng(seed=iteration))
 
         # MMIS weights (non-vec)
         mmis.compute_all_mmis_weights(cluster, samplers)
@@ -195,8 +189,8 @@ class Renderer:
         """
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
-        mmis, propagation, samplers = _make_blt_components(
-            kernel_radius, kernel_weight, num_prop_iterations
+        cluster, mmis, propagation, samplers = _make_blt_components(
+            scene, kernel_radius, kernel_weight, num_prop_iterations
         )
 
         for i in range(n_iterations):
@@ -206,7 +200,7 @@ class Renderer:
             sampler.seed(i, width * height)
             accum += self._render_iterate_nonvec(
                 scene, sensor, sampler, height, width,
-                mmis, propagation, samplers,
+                cluster, mmis, propagation, samplers,
                 iteration=i, verbose=verbose,
             )
 
@@ -215,7 +209,7 @@ class Renderer:
     # ── 3. BLT vectorized ─────────────────────────────────────────────────────
 
     def _render_iterate_vec(self, scene, sensor, sampler, height, width,
-                            mmis, propagation, samplers, iteration=0,
+                            cluster, mmis, propagation, samplers, iteration=0,
                             verbose=False):
         
         t0 = time.time()
@@ -227,8 +221,9 @@ class Renderer:
         if not segment_pool.paths:
             return np.zeros((height, width, 3))
         t0 = time.time()
-        cluster = _cluster_segments(scene, segment_pool, iteration)
-        print(f"sampling: {time.time()-t0:.1f}s")       
+        cluster.set_segments(segment_pool.paths)
+        cluster.cluster(np.random.default_rng(seed=iteration))
+        print(f"cluster: {time.time()-t0:.1f}s")       
         
         t0 = time.time()
         # Build pair cache once — BSDF + PDF computed here, reused in propagation
@@ -261,8 +256,8 @@ class Renderer:
         """
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
-        mmis, propagation, samplers = _make_blt_components(
-            kernel_radius, kernel_weight, num_prop_iterations
+        cluster, mmis, propagation, samplers = _make_blt_components(
+            scene, kernel_radius, kernel_weight, num_prop_iterations
         )
 
         for i in range(n_iterations):
@@ -272,7 +267,7 @@ class Renderer:
             sampler.seed(i, width * height)
             accum += self._render_iterate_vec(
                 scene, sensor, sampler, height, width,
-                mmis, propagation, samplers,
+                cluster, mmis, propagation, samplers,
                 iteration=i, verbose=verbose,
             )
 

@@ -257,3 +257,85 @@ class TestCluster:
 
         assert find_cluster_of(0) != find_cluster_of(2), \
             "Same position but different normal octant should not cluster"
+        
+    def test_cluster_kernel_values_axis_aligned(self, rng):
+        """
+        For a cluster whose mean normal is exactly axis-aligned (n = (0,1,0)),
+        the kernel value should be 1/ell^2 since |n . e_max| = 1.
+        """
+        s0 = make_segment(
+            x=make_surface_point(0.5, 0.5, 0.5,  0, 1, 0),
+            y=make_surface_point(0.5, 0.6, 0.5,  0, 1, 0),
+        )
+        aabb = make_aabb([0, 0, 0], [1, 1, 1])
+        c_obj = Cluster(c=50)
+        c_obj.set_scene_aabb(aabb)
+        c_obj.set_segments([s0])
+        c_obj.cluster(rng, voxel_size=0.2)
+
+        # force known state
+        c_obj.cluster_mean_normals = np.array([[0.0, 1.0, 0.0]])
+        c_obj.voxel_size = 0.2
+        abs_n = np.abs(c_obj.cluster_mean_normals)
+        c_obj.cluster_kernel_values = abs_n.max(axis=1) / (c_obj.voxel_size ** 2)
+
+        expected = 1.0 / (0.2 ** 2)  # |n . e_max| = 1
+        assert np.isclose(c_obj.cluster_kernel_values[0], expected), \
+            f"Expected {expected}, got {c_obj.cluster_kernel_values[0]}"
+
+
+    def test_cluster_kernel_values_tilted_normal(self, rng):
+        """
+        For a tilted normal n = (0, 0.6, 0.8) the dominant axis is z,
+        so |n . e_max| = 0.8 and K = 0.8 / ell^2.
+        """
+        s0 = make_segment(
+            x=make_surface_point(0.5, 0.5, 0.5,  0, 0.6, 0.8),
+            y=make_surface_point(0.5, 0.6, 0.5,  0, 0.6, 0.8),
+        )
+        aabb = make_aabb([0, 0, 0], [1, 1, 1])
+        c_obj = Cluster(c=50)
+        c_obj.set_scene_aabb(aabb)
+        c_obj.set_segments([s0])
+        c_obj.cluster(rng, voxel_size=0.2)
+
+        c_obj.cluster_mean_normals = np.array([[0.0, 0.6, 0.8]])
+        c_obj.voxel_size = 0.2
+        abs_n = np.abs(c_obj.cluster_mean_normals)
+        c_obj.cluster_kernel_values = abs_n.max(axis=1) / (c_obj.voxel_size ** 2)
+
+        expected = 0.8 / (0.2 ** 2)
+        assert np.isclose(c_obj.cluster_kernel_values[0], expected), \
+            f"Expected {expected}, got {c_obj.cluster_kernel_values[0]}"
+
+
+    def test_cluster_kernel_values_steeper_tilt_gives_smaller_K(self, rng):
+        """
+        A more tilted surface (smaller |n . e_max|) should give a smaller K,
+        because the intersection area is larger.
+        """
+        s0 = make_segment(
+            x=make_surface_point(0.5, 0.5, 0.5,  0, 1, 0),
+            y=make_surface_point(0.5, 0.6, 0.5,  0, 1, 0),
+        )
+        aabb = make_aabb([0, 0, 0], [1, 1, 1])
+        c_obj = Cluster(c=50)
+        c_obj.set_scene_aabb(aabb)
+        c_obj.set_segments([s0])
+        c_obj.cluster(rng, voxel_size=0.2)
+        c_obj.voxel_size = 0.2
+
+        # flat surface: |n . e_max| = 1.0
+        c_obj.cluster_mean_normals = np.array([[0.0, 1.0, 0.0]])
+        abs_n = np.abs(c_obj.cluster_mean_normals)
+        c_obj.cluster_kernel_values = abs_n.max(axis=1) / (c_obj.voxel_size ** 2)
+        k_flat = c_obj.cluster_kernel_values[0]
+
+        # tilted surface: |n . e_max| = 0.6
+        c_obj.cluster_mean_normals = np.array([[0.0, 0.6, 0.8]])
+        abs_n = np.abs(c_obj.cluster_mean_normals)
+        c_obj.cluster_kernel_values = abs_n.max(axis=1) / (c_obj.voxel_size ** 2)
+        k_tilted = c_obj.cluster_kernel_values[0]
+
+        assert k_tilted < k_flat, \
+            "More tilted surface has larger intersection area, so K should be smaller"

@@ -11,6 +11,7 @@ class Cluster:
     segments: list = field(default_factory=list)
     scene_aabb: mi.BoundingBox3f = None
     c: int = 10 # expected number of points / voxel
+    alpha: float = 2/3 # for progressive 
 
     # need these to know which segment each segment endpoint actually belongs to
     # kinda mimics the c++ pointer method, once we convert to c++ just use pointers lol
@@ -21,15 +22,35 @@ class Cluster:
     sorted_indices: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     cluster_ranges: list = field(default_factory=list)  # list of (start, end) into sorted_indices
 
+    _iteration: int = 0
+    _voxel_size_0: float = 0.0 # init length
+    voxel_size: float = 0.0 # THIS IS SIDE LENGTH!!!
+    scene_vol: float = 0.0
+
+    # one scalar per cluster, same indexing as rest
+    cluster_kernel_values: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float64))
+
     def set_segments(self, segments):
         self.segments = segments
 
     def set_scene_aabb(self, aabb):
         self.scene_aabb = aabb
+        self.scene_vol = aabb.volume()
 
     def _compute_voxel_size(self):
-        scene_vol = self.scene_aabb.volume()
-        return (self.c * scene_vol * (1 / (len(self.segments) * 2))) ** (1/3)
+        return (self.c * self.scene_vol * (1 / (len(self.segments) * 2))) ** (1/3)
+    
+    def _compute_progressive_voxel_size(self):
+        """
+        set voxel_size_0 via compute voxel size based on c
+        then each progressive one should be reduced (built in kernel!!)
+
+        its a Power-law decay: r_n = r_0 * n^(-alpha/2)  (Knaus-Zwicker 2011, Eq. 5)
+        basically n is the iteration, that makes it slower decay than exponential
+        """
+        if self._iteration == 0: 
+            return self._voxel_size_0
+        return self._voxel_size_0 * (self._iteration ** (-self.alpha / 2))
 
     def _compute_octants(self, normals: np.ndarray) -> np.ndarray:
         """
@@ -167,9 +188,10 @@ class Cluster:
         for c_idx, (start, end) in enumerate(self.cluster_ranges):
             flat_indices = self.sorted_indices[start:end]         # endpoints in this cluster
             self.cluster_mean_positions[c_idx] = positions[flat_indices].mean(axis=0)
-            self.cluster_mean_normals[c_idx]   = normals[flat_indices].mean(axis=0)
-            # note: mean normal is NOT renormalized — magnitude carries cluster size info
-            # renormalize only when constructing the plane for area estimation
+            raw_normals = normals[flat_indices].mean(axis=0)
+            self.cluster_mean_normals[c_idx] = raw_normals / np.linalg.norm(raw_normals)
+            # note: mean normal must be renormalized because the mean will not be a unit vector
+            # from all normals
 
 
     def cluster(self, rng: np.random.Generator, voxel_size = 0):
@@ -177,10 +199,13 @@ class Cluster:
         assert len(self.segments) > 0, "No segments set"
         assert self.c > 0, "Target cluster size c must be positive"
 
-        if (voxel_size == 0):
-            self.voxel_size = self._compute_voxel_size()
+        if (voxel_size <= 0):
+            if self._iteration == 0:
+                self._voxel_size_0 = self._compute_voxel_size()
+            self.voxel_size = self._compute_progressive_voxel_size()
         else:
             self.voxel_size = voxel_size
+
         positions, normals = self._flatten_endpoints()
 
         keys = self._generate_cluster_keys(positions, normals, rng)
@@ -228,3 +253,25 @@ class Cluster:
         This is just for testing"""
         flat_idx = seg_idx * 2 + 1  # which_end=1 is y
         return self.endpoint_to_cluster[flat_idx]
+    
+    def compute_cluster_kernel_values(self):
+        # plane with normal n slicing through axis aligned cube of side a
+        # what is the area of the polygon cut out?
+
+        # According tot he paper: The kernel value is then approximated as
+        # the reciprocal of the intersection area between this plane and the voxel
+        # Area projected = A(plane) * | n dot e|
+        """
+        here e is the most aligned axis, dot n to the most aligned axis (ig gives how much its tilted)
+        A plane has a min of l * l, max of l * (corner to corner distance)
+        we make an approximation that one of the sides of the plane always coincides (ie the projected
+        plane is just tilted on one axis) 
+
+        | -> /
+
+        Obviously in this case, you just have the tilted side l / cos tilt angle
+        that cos tilt angle is just n * the most aligned axis lol
+        """
+        abs_n = np.abs(self.cluster_mean_normals)
+        tilt = abs_n.max(axis=1)
+        self.cluster_kernel_values =  tilt / (self.voxel_size ** 2)
