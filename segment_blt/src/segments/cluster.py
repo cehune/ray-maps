@@ -21,6 +21,7 @@ class Cluster:
     # contiguous indices of surface points
     sorted_indices: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     cluster_ranges: list = field(default_factory=list)  # list of (start, end) into sorted_indices
+    # therefore, cluster ranges is start end of endpoint indexes, not the segments
 
     _iteration: int = 0
     _voxel_size_0: float = 0.0 # init length
@@ -228,6 +229,8 @@ class Cluster:
     
         self.compute_cluster_stats(positions, normals)
         self.build_reverse_map()
+        # self.compute_cluster_kernel_values()
+        self._iteration += 1
 
     def get_cluster_segments(self, cluster_idx: int) -> list:
         """
@@ -248,10 +251,16 @@ class Cluster:
         for c_idx, (start, end) in enumerate(self.cluster_ranges):
             self.endpoint_to_cluster[self.sorted_indices[start:end]] = c_idx
 
+    # DEPRACATE
     def get_y_cluster(self, seg_idx: int) -> int:
         """Returns the cluster index containing y-endpoint of segment seg_idx.
         This is just for testing"""
         flat_idx = seg_idx * 2 + 1  # which_end=1 is y
+        return self.endpoint_to_cluster[flat_idx]
+    
+    def get_cluster_from_endpoint(self, seg_idx: int, endpoint: int = 1):
+        # 0 for x, 1 for y
+        flat_idx = seg_idx * 2 + endpoint
         return self.endpoint_to_cluster[flat_idx]
     
     def compute_cluster_kernel_values(self):
@@ -271,6 +280,8 @@ class Cluster:
 
         Obviously in this case, you just have the tilted side l / cos tilt angle
         that cos tilt angle is just n * the most aligned axis lol
+        not actually used
+        
         """
         abs_n = np.abs(self.cluster_mean_normals)
         tilt = abs_n.max(axis=1)
