@@ -163,28 +163,35 @@ class Renderer:
     def _render_iterate_nonvec(self, scene, sensor, sampler, height, width,
                                mmis, propagation, samplers, iteration=0,
                                verbose=False):
+        t0 = time.time()
         segment_pool, camera_first_segments = _sample_segments(
             scene, sensor, sampler, height, width
         )
-
+        print(f"sampling: {time.time()-t0:.1f}s")
         if not segment_pool.paths:
             return np.zeros((height, width, 3))
-
+        
+        t0 = time.time()
         cluster = _cluster_segments(scene, segment_pool, iteration)
+        print(f"clsuter: {time.time()-t0:.1f}s")
 
         # MMIS weights (non-vec)
+        t0 = time.time()
         mmis.compute_all_mmis_weights(cluster, samplers)
-
+        print(f"mmis: {time.time()-t0:.1f}s")
         # Propagation (non-vec)
+        t0 = time.time()
         propagation.iterate_propogation(cluster, samplers)
-
+        print(f"prop: {time.time()-t0:.1f}s")
         if verbose:
             pair_cache = build_pair_cache(
                 cluster, propagation.kernel_radius, samplers
             )
             _diag("nonvec", cluster, pair_cache, camera_first_segments)
-
-        return _final_gather(camera_first_segments, height, width)
+        t0 = time.time()
+        bib = _final_gather(camera_first_segments, height, width)
+        print(f"gather: {time.time()-t0:.1f}s")
+        return bib
 
     def render_nonvec(self, scene, height=128, width=128, n_iterations=8,
                       kernel_radius=16, kernel_weight=0.67,
