@@ -34,6 +34,7 @@ class PairCache:
 
     # mmis pairs: when computing the weight for segment j, auxiliary t contributes p(j|t)
     # (t's y-endpoint is in the same cluster as j's x-endpoint)
+    # this is just for camera methods for now
     mmis_j: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     mmis_t: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     mmis_pdf: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
@@ -50,7 +51,7 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
     ----------
     cluster       : Cluster (already clustered, reverse map built)
     kernel_radius : current kernel radius — used for disc check
-    samplers      : dict[SegmentTechnique, Sampler]
+    samplers      : dict[SegmentTechnique, Sampler] from Sampler.build_registry
     """
     from segments.sampler_types import SequentialSampler
 
@@ -140,6 +141,7 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
                 mmis_j_list.append(int(j_idx))
                 mmis_t_list.append(int(t_idx))
 
+    # PRPOPAGATION!!!! PROPAGATION!!!!!
     # evvaluate BSDF for propagation pairs (once; reused across all prop iters) ---
     P = len(prop_i_list)
     prop_fr = np.zeros((P, 3), dtype=np.float64)

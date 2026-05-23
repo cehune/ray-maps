@@ -54,6 +54,7 @@ class Propagation:
 
         # --- Technique space 1: CAMERA sampler ---
         y_cluster_idx = cluster.endpoint_to_cluster[seg_idx * 2 + 1]
+        k = cluster.cluster_kernel_values[y_cluster_idx]
         start, end = cluster.cluster_ranges[y_cluster_idx]
         for flat_idx in cluster.sorted_indices[start:end]:
             next_idx, which_end = cluster.endpoint_metadata[flat_idx]
@@ -62,8 +63,6 @@ class Propagation:
             if which_end == 0:  # y-endpoint of seg is near the x of the next
                 next_seg: Segment = cluster.segments[next_idx]
                 if next_seg.mmis_weight == 0.0:  # guard before kernel check
-                    continue
-                if not self.kernel_check_disc(segment.y, next_seg.x):
                     continue
                 sampler = samplers.get(next_seg.technique)
                 if sampler is None:
@@ -126,9 +125,8 @@ class Propagation:
             # Extract per-segment scalars once — static across all propagation iterations
             mmis_w = np.array([float(s.mmis_weight) for s in segs], dtype=np.float64)
             geom   = np.array([float(s.geom_term)   for s in segs], dtype=np.float64)
-
-            # Pre-multiply BSDF with static mmis_weight and geom_term for each pair:
-            # weighted_fr[k] = prop_fr[k] * mmis_w[j[k]] * geom[j[k]]   shape (P, 3)
+            # kernel val implicit in mmis, don't need here
+        
             weighted_fr = pair_cache.prop_fr * (mmis_w[j] * geom[j])[:, np.newaxis]
 
         for _ in range(self.num_prop_iterations):
@@ -149,6 +147,5 @@ class Propagation:
                 float(rad_in[seg_idx, 1]),
                 float(rad_in[seg_idx, 2]),
             )
-
         self._update_kernel()
         
