@@ -125,7 +125,7 @@ def make_aabb(min_pt, max_pt) -> mi.BoundingBox3f:
     aabb.expand(mi.Point3f(*max_pt))
     return aabb
 
-def straight_chain():
+def straight_chain(technique: SegmentTechnique = SegmentTechnique.CAMERA):
     """
     Three collinear segments along z-axis, all normals pointing +z.
       s0: (0,0,0)->(0,0,1)  camera origin
@@ -135,14 +135,17 @@ def straight_chain():
     s0 = make_segment(
         x=make_surface_point(0, 0, 0, 0, 0, 1, is_camera=True),
         y=make_surface_point_with_mock_bsdf(0, 0, 1, 0, 0, 1),
+        technique=technique
     )
     s1 = make_segment(
         x=make_surface_point_with_mock_bsdf(0, 0, 1, 0, 0, 1),
         y=make_surface_point_with_mock_bsdf(0, 0, 2, 0, 0, 1),
+        technique=technique
     )
     s2 = make_segment(
         x=make_surface_point_with_mock_bsdf(0, 0, 2, 0, 0, 1),
         y=make_surface_point_with_mock_bsdf(0, 0, 3, 0, 0, 1),
+        technique=technique
     )
     return s0, s1, s2
 

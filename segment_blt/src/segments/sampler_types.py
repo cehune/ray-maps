@@ -117,3 +117,76 @@ class SequentialSampler(Sampler):
         if cos_o < 1e-6:
             return mi.Color3f(0.0)
         return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
+    
+
+class LightSampler(Sampler):
+    technique_type = SegmentTechnique.CAMERA
+    # TODO combine with sequential sampler, don't need to repeat so much code lol
+    def conditional_pdf(self, segment: Segment, auxiliary: Segment):
+        """
+        wenyou says this is a mirror of the camera sampler
+        but its from the persepctive of the light sampelr, so we still start from
+        aux x->y and assume that seg follows from x->y (ie that seg is a light seg)
+        pdf oviously treats segment y 
+        so it has to be auxiliary y light toward 
+
+        """
+
+        if auxiliary.y.is_light or auxiliary.x.is_light:
+            return 0.0
+            # couldn't have sampled it
+        delta = segment.y.p - auxiliary.y.p
+        len_sq = float(dr.squared_norm(delta))
+        if len_sq < 1e-10:
+            return 0.0
+
+        wo_world = dr.normalize(delta)
+        wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
+
+        # incoming direction at auxiliary.x is along the segment direction
+        # light path travels x→y, so incoming at x is -seg.dir
+
+        si = auxiliary.y.si
+        si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
+
+        bsdf = si.bsdf()
+        if bsdf is None:
+            return 0.0
+        
+        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+
+        pw_result = bsdf.eval_pdf(ctx, si, wo_local)
+        try:
+            pw = float(pw_result[1])
+        except (TypeError, IndexError):
+            pw = float(pw_result)
+
+        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
+        cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
+
+        if cos_at_aux_y < 1e-6:
+            return 0.0
+
+        return pw * cos_at_seg_y / len_sq
+
+    @staticmethod
+    def shift_invariant_bsdf(seg: Segment, next_seg: Segment) -> mi.Color3f:
+        # same as camera version for diffuse — adjoint distinction matters for glossy
+        wi_world = -seg.dir
+        wo_world = dr.normalize(next_seg.y.p - seg.y.p)
+
+        frame_y = mi.Frame3f(seg.y.n)
+        si = seg.y.si
+        si.wi = frame_y.to_local(wi_world)
+        wo_local = frame_y.to_local(wo_world)
+
+        bsdf = si.bsdf()
+        if bsdf is None:
+            return mi.Color3f(0.0)
+
+        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+        if cos_o < 1e-6:
+            return mi.Color3f(0.0)
+        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+
+        return bsdf.eval(ctx, si, wo_local) / cos_o

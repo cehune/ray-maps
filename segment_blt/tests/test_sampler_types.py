@@ -1,5 +1,6 @@
-from segments.sampler_types import SequentialSampler
+from segments.sampler_types import SequentialSampler, LightSampler
 from segment_blt.tests.utils import make_segment, make_surface_point_with_mock_bsdf, straight_chain
+from segments.primitives import SegmentTechnique
 import drjit as dr
 import pytest
 import mitsuba as mi
@@ -147,3 +148,150 @@ class TestSequentialSampler:
         assert float(captured['wo'].z) == pytest.approx(1.0, abs=1e-4)
         assert float(captured['wo'].x) == pytest.approx(0.0, abs=1e-4)
         assert float(captured['wo'].y) == pytest.approx(0.0, abs=1e-4)
+
+class TestLightSampler:
+    def test_conditional_pdf_non_negative(self):
+        """p_c must be non-negative and finite for any valid light-path geometry."""
+        sampler = LightSampler()
+
+        auxiliary = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, 0,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1, bsdf_pdf_value=0.5),
+            technique=SegmentTechnique.LIGHT,
+        )
+        segment = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0.1, 0, 2, 0, 0, 1),
+            technique=SegmentTechnique.LIGHT,
+        )
+
+        pdf = sampler.conditional_pdf(segment, auxiliary)
+
+        assert pdf >= 0.0
+        assert pdf == pdf
+        assert pdf < float('inf')
+
+    def test_conditional_pdf_light_terminal_auxiliary_returns_zero(self):
+        """
+        auxiliary.y.is_light must return 0 — a light-terminal segment
+        cannot be an auxiliary in the sequential light model.
+        """
+        sampler = LightSampler()
+
+        auxiliary = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, 0,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1, bsdf_pdf_value=0.5),
+            technique=SegmentTechnique.LIGHT,
+        )
+        auxiliary.y.is_light = True
+
+        segment = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0.1, 0, 2, 0, 0, 1),
+            technique=SegmentTechnique.LIGHT,
+        )
+
+        pdf = sampler.conditional_pdf(segment, auxiliary)
+        assert pdf == 0.0
+
+    def test_conditional_pdf_lambertian_known_value(self):
+        """
+        Same geometry as sequential sampler test — result should be identical
+        for diffuse since adjoint BSDF == forward BSDF for Lambertian.
+        """
+        sampler = LightSampler()
+
+        expected_bsdf_pdf = float(1.0 / dr.pi)
+
+        auxiliary = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, -1,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0, 0,  0,  0, 0, 1, bsdf_pdf_value=expected_bsdf_pdf),
+            technique=SegmentTechnique.LIGHT,
+        )
+        segment = make_segment(
+            x=make_surface_point_with_mock_bsdf(0, 0, 0,  0, 0, 1),
+            y=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1),
+            technique=SegmentTechnique.LIGHT,
+        )
+
+        pdf = sampler.conditional_pdf(segment, auxiliary)
+        expected = expected_bsdf_pdf * 1.0 / 1.0
+
+        assert abs(pdf - expected) < 1e-5, \
+            f"Expected {expected:.6f}, got {pdf:.6f}"
+
+    def test_shift_invariant_bsdf_non_negative_finite(self):
+        sampler = LightSampler()
+        _, seg, next_seg = straight_chain(technique=SegmentTechnique.LIGHT)
+        result = sampler.shift_invariant_bsdf(seg, next_seg)
+        for ch in [result.x, result.y, result.z]:
+            assert float(ch) >= 0.0
+            assert math.isfinite(float(ch))
+
+    def test_evaluates_at_y_of_seg_not_x(self):
+        """
+        Light path convention: BSDF still evaluated at seg.y — same endpoint
+        convention as camera, just with adjoint transport mode.
+        """
+        sampler = LightSampler()
+        _, seg, next_seg = straight_chain(technique=SegmentTechnique.LIGHT)
+        sampler.shift_invariant_bsdf(seg, next_seg)
+        seg.x.si.bsdf.assert_not_called()
+        seg.y.si.bsdf.assert_called()
+
+    def test_uses_importance_transport_mode(self):
+        """
+        Light paths must use TransportMode.Importance (adjoint BSDF).
+        """
+        sampler = LightSampler()
+        _, seg, next_seg = straight_chain(technique=SegmentTechnique.LIGHT)
+
+        captured = {}
+        mock_bsdf = seg.y.si.bsdf()
+        original_eval = mock_bsdf.eval
+
+        def capture(ctx, si, wo):
+            captured['mode'] = ctx.mode
+            return original_eval(ctx, si, wo)
+
+        mock_bsdf.eval = capture
+        seg.y.si.bsdf = MagicMock(return_value=mock_bsdf)
+
+        sampler.shift_invariant_bsdf(seg, next_seg)
+
+        assert captured['mode'] == mi.TransportMode.Importance, \
+            f"Expected Importance mode, got {captured['mode']}"
+
+    def test_zero_for_none_bsdf(self):
+        sampler = LightSampler()
+        _, seg, next_seg = straight_chain(technique=SegmentTechnique.LIGHT)
+        seg.y.si.bsdf = MagicMock(return_value=None)
+        result = sampler.shift_invariant_bsdf(seg, next_seg)
+        assert float(result.x) == 0.0
+        assert float(result.y) == 0.0
+        assert float(result.z) == 0.0
+
+    def test_wi_is_minus_seg_dir(self):
+        """
+        wi at seg.y points back along the light path — toward seg.x,
+        which is -seg.dir since dir = (y.p - x.p)/len.
+        """
+        sampler = LightSampler()
+        _, seg, next_seg = straight_chain(technique=SegmentTechnique.LIGHT)
+
+        captured = {}
+        mock_bsdf = seg.y.si.bsdf()
+        original_eval = mock_bsdf.eval
+
+        def capture(ctx, si, wo):
+            captured['wi'] = mi.Vector3f(si.wi)
+            return original_eval(ctx, si, wo)
+
+        mock_bsdf.eval = capture
+        seg.y.si.bsdf = MagicMock(return_value=mock_bsdf)
+
+        sampler.shift_invariant_bsdf(seg, next_seg)
+
+        assert float(captured['wi'].z) == pytest.approx(-1.0, abs=1e-4)
+        assert float(captured['wi'].x) == pytest.approx( 0.0, abs=1e-4)
+        assert float(captured['wi'].y) == pytest.approx( 0.0, abs=1e-4)

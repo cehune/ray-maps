@@ -5,7 +5,7 @@ def luminance_rgb(c: mi.Color3f) -> float:
     """Perceived luminance weights for RGB."""
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 
-def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = SegmentTechnique.CAMERA, max_depth=16, rr_start_depth = 3):
+def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = SegmentTechnique.CAMERA, max_depth=8):
     """
     starting sp is either the camera or light
     si is the first surface interaction
@@ -41,18 +41,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
         if bs.pdf == 0 or dr.all(bsdf_weight == 0):
             break
 
-        # in standard path tracing we would normally just modify weight absed on bsdf weight and carry forward
-        # since segments are disocnnected, only use a local weight
-        local_weight = bsdf_weight
-
-        # TODO: doesn't actually matter right now, but q should actually be 
-        # based on an accumulated weight, not local
-        # russian roulette
-        if i >= rr_start_depth:
-            q = min(0.97, luminance_rgb(local_weight))
-            if sampler.next_1d() >= q:
-                break
-            local_weight /= q
+        # normally put russian roulette here, but segments don't use RR
 
         # bs.wo is the sample direction outgoing in local space, convert to world
         world_wo = si.to_world(bs.wo)
@@ -68,7 +57,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
             curr_sp.is_light = True
             curr_sp.Le = emitter_hit.eval(si_next)
         try:
-            seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(local_weight), technique=technique)
+            seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(bsdf_weight), technique=technique)
             segment_path.append(seg)
 
         except ValueError:
@@ -82,7 +71,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
 
     return segment_path
 
-def sample_light_path(scene, sampler, max_depth=16, rr_start_depth=3):
+def sample_light_path(scene, sampler, max_depth=8, rr_start_depth=3):
     # just get an emitter, weighted by their power
     emitter_sample = scene.sample_emitter(sampler.next_1d())
     emitter = emitter = scene.emitters()[emitter_sample[0]]
@@ -121,8 +110,7 @@ def sample_light_path(scene, sampler, max_depth=16, rr_start_depth=3):
     weight = emitted_ray_weight / emitter_pdf
     
     return generate_path(scene, sampler, weight, light_sp, si, 
-                         technique=SegmentTechnique.LIGHT, max_depth=max_depth, 
-                         rr_start_depth=rr_start_depth)
+                         technique=SegmentTechnique.LIGHT, max_depth=max_depth)
 
 def sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=16, rr_start_depth=3):
     if not si.is_valid():
@@ -133,8 +121,7 @@ def sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=16, rr_sta
         is_camera = True)
     return generate_path(scene, sampler, ray_weight, cam_sp, si,
                           technique=SegmentTechnique.CAMERA,
-                          max_depth=max_depth,
-                          rr_start_depth=rr_start_depth)
+                          max_depth=max_depth)
 
 
 def evaluate_path_base(segments: list[Segment]) -> mi.Color3f:
