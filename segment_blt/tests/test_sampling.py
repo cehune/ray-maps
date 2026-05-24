@@ -102,29 +102,6 @@ def test_light_path_segments_are_connected():
 
     assert False, "No path with 2+ segments found"
 
-
-def test_light_path_throughput_decreases_monotonically():
-    # TODO: Remove will break with MIS
-    """Throughput magnitude should not increase along the path (energy conservation)"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
-    sampler = mi.load_dict({'type': 'independent'})
-    sampler.seed(5, 1)
-
-    for _ in range(20):
-        path = sample_light_path(scene, sampler)
-        if len(path) < 2:
-            continue
-
-        for i in range(len(path) - 1):
-            curr_lum = luminance_rgb(path[i].throughput)
-            next_lum = luminance_rgb(path[i+1].throughput)
-            assert next_lum <= curr_lum + 1e-4, \
-                f"Throughput increased at segment {i}: {curr_lum} -> {next_lum}"
-        return
-
-    assert False, "No path with 2+ segments found"
-
-
 def test_light_path_last_segment_hits_light_or_surface():
     # TODO: Remove, will break with MIS
     """Last segment endpoint must be either a light or a valid non-degenerate surface"""

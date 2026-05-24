@@ -32,8 +32,13 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
     for i in range(max_depth):
         # generate bsdf at the point
         bsdf = si.bsdf()
+
+        ctx = mi.BSDFContext(
+            mi.TransportMode.Importance if technique == SegmentTechnique.LIGHT
+            else mi.TransportMode.Radiance
+        )
         bs, bsdf_weight = bsdf.sample(
-            mi.BSDFContext(), si,
+            ctx, si,
             sampler.next_1d(),
             mi.Point2f(sampler.next_1d(), sampler.next_1d())
         )
@@ -63,7 +68,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
         except ValueError:
             break # just if its too short
 
-        if curr_sp.is_light or dr.norm(curr_sp.p - prev_sp.p) < 1e-4: # same spot basically
+        if (technique == SegmentTechnique.CAMERA and curr_sp.is_light): # same spot basically
             break
 
         prev_sp = curr_sp
@@ -71,7 +76,7 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
 
     return segment_path
 
-def sample_light_path(scene, sampler, max_depth=8, rr_start_depth=3):
+def sample_light_path(scene, sampler, max_depth=8):
     # just get an emitter, weighted by their power
     emitter_sample = scene.sample_emitter(sampler.next_1d())
     emitter = emitter = scene.emitters()[emitter_sample[0]]
@@ -82,34 +87,42 @@ def sample_light_path(scene, sampler, max_depth=8, rr_start_depth=3):
     if emitter_pdf == 0: # non valid, shouldn't mmatter for well defined scenes
         return []
     
-    # sample outgoing direction from emitter (cosine weighted over hemisphere)
-    # this would give local, and then we would have to rotate by the emitter normal
-    # and retrieve the pdf for that direction. can just directly do emitter.sample
-    # but with sample ray we just get a random one on it's surface
-    emitted_ray, emitted_ray_weight = emitter.sample_ray(
-        time=0.0,
-        sample1=sampler.next_1d(),
-        sample2=mi.Point2f(sampler.next_1d(), sampler.next_1d()),
-        sample3=mi.Point2f(sampler.next_1d(), sampler.next_1d())
-    )
-
-    if dr.all(emitted_ray_weight == 0):
+    # Rather than use sample_ray, get direction and position directly
+    # or else, weight includes the Le. We need this separate to get the normal, cant
+    # just use the direction as a normal
+    # ps has the normal and position
+    ps: mi.PositionSample3f = emitter.sample_position(
+        ref=0.0,
+        ds=mi.Point2f(sampler.next_1d(), sampler.next_1d()),
+    )[0]
+    if ps.pdf == 0:
         return []
 
-    light_sp = SurfacePoint(
-        si = make_endpoint_si(emitted_ray.o, -emitted_ray.d),
-        is_light = True
+    # Get the direction (again, would be from sample ray otherwise, we need it seaprate)
+    local_dir = mi.warp.square_to_cosine_hemisphere(
+        mi.Point2f(sampler.next_1d(), sampler.next_1d())
     )
+    dir_pdf = mi.warp.square_to_cosine_hemisphere_pdf(local_dir)
+    world_dir = mi.Frame3f(ps.n).to_world(local_dir)
 
+    # Build a proper SI at the light point with correct normal + wi
+    light_si = make_endpoint_si(ps.p, ps.n)
+    light_si.wi = local_dir   # outgoing dir in local frame
+    Le_at_light = emitter.eval(light_si)
+
+    light_sp = SurfacePoint(si=light_si, is_light=True, Le=Le_at_light)
+
+    # Trace first segment
+    emitted_ray = mi.Ray3f(ps.p, world_dir)
     si = scene.ray_intersect(emitted_ray)
-
     if not si.is_valid():
         return []
-    
-    # generate weight cost theta / pdfs
-    weight = emitted_ray_weight / emitter_pdf
-    
-    return generate_path(scene, sampler, weight, light_sp, si, 
+
+    # Starting throughput: cos(θ) / (emitter_pdf · pos_pdf · dir_pdf)
+    cos_theta = dr.abs(dr.dot(ps.n, world_dir))
+    weight = mi.Color3f(cos_theta / (emitter_pdf * ps.pdf * dir_pdf))
+
+    return generate_path(scene, sampler, weight, light_sp, si,
                          technique=SegmentTechnique.LIGHT, max_depth=max_depth)
 
 def sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=16, rr_start_depth=3):

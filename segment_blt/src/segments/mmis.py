@@ -44,19 +44,17 @@ class MMIS:
         """
         p_sum = 0.0
 
-        # --- Technique space 1: CAMERA sampler ---
         # s' can be a continuation of a camera segment t where y_t ≈ x_{s'}
         x_cluster_idx = cluster.endpoint_to_cluster[main_seg_idx * 2 + 0]
         start, end = cluster.cluster_ranges[x_cluster_idx]
         for flat_idx in cluster.sorted_indices[start:end]:
             aux_seg_idx, which_end = cluster.endpoint_metadata[flat_idx]
+            if aux_seg_idx == main_seg_idx: continue 
             if which_end == 1:  # y-endpoint of t is in this cluster
                 t = cluster.segments[aux_seg_idx]
                 sampler = samplers[t.technique]
-                if sampler.technique_type == SegmentTechnique.CAMERA:
-                    p_sum += sampler.conditional_pdf(segment, t)
-
-        # TODO: light sampling
+                
+                p_sum += sampler.conditional_pdf(segment, t)
 
         return 1.0 / p_sum if p_sum > 0.0 else 0.0
 
