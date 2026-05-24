@@ -42,7 +42,7 @@ class PairCache:
     trivial_mmis: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
 
-def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
+def build_pair_cache(cluster, samplers) -> PairCache:
     """
     Build PairCache for the current clustering.
 
@@ -67,8 +67,6 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
                      dtype=np.float64)  # (S, 3)
     y_nor = np.array([[float(s.y.n.x), float(s.y.n.y), float(s.y.n.z)] for s in segs],
                      dtype=np.float64)  # (S, 3)
-
-    r_sq = kernel_radius ** 2
 
     prop_i_list: list[int] = []
     prop_j_list: list[int] = []
@@ -109,16 +107,8 @@ def build_pair_cache(cluster, kernel_radius: float, samplers) -> PairCache:
 
         # TODO: potentially remove if disc doesn't work nice
         if len(I) > 0:
-            # disc check: tangential distance from i.y to j.x ≤ r
-            offsets = x_pos[J] - y_pos[I]                        # (M, 3)
-            n_i     = y_nor[I]                                    # (M, 3)
-            nd      = np.einsum('ij,ij->i', offsets, n_i)        # (M,)
-            toff    = offsets - nd[:, None] * n_i                 # (M, 3)
-            tdist_sq = np.einsum('ij,ij->i', toff, toff)         # (M,)
-            kern_mask = tdist_sq <= r_sq
-
-            prop_i_list.extend(I[kern_mask].tolist())
-            prop_j_list.extend(J[kern_mask].tolist())
+            prop_i_list.extend(I.tolist())
+            prop_j_list.extend(J.tolist())
 
         # mmis pairs (no disc check — just cluster membership)
         # for each j (x in cluster), t (y in cluster) is a potential auxiliary.

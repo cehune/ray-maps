@@ -151,4 +151,6 @@ class Propagation:
             )
 
         self._update_kernel()
+        # how much radiance is contributed per hop
+        print(f"expected gain per hop (pairs * weighted_fr): {(len(pair_cache.prop_i) / len(segs)) * weighted_fr.mean():.4f}")
         

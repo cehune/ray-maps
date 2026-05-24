@@ -174,7 +174,7 @@ class Renderer:
 
         if verbose:
             pair_cache = build_pair_cache(
-                cluster, propagation.kernel_radius, samplers
+                cluster, samplers
             )
             _diag("nonvec", cluster, pair_cache, camera_first_segments)
 
@@ -224,10 +224,9 @@ class Renderer:
         cluster.set_segments(segment_pool.paths)
         cluster.cluster(np.random.default_rng(seed=iteration))
         print(f"cluster: {time.time()-t0:.1f}s")       
-        
         t0 = time.time()
         # Build pair cache once — BSDF + PDF computed here, reused in propagation
-        pair_cache = build_pair_cache(cluster, propagation.kernel_radius, samplers)
+        pair_cache = build_pair_cache(cluster, samplers)
         print(f"pair: {time.time()-t0:.1f}s")
 
         # MMIS weights (vec)
@@ -250,7 +249,7 @@ class Renderer:
 
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
                    kernel_radius=16, kernel_weight=0.67,
-                   num_prop_iterations=4, verbose=True):
+                   num_prop_iterations=8, verbose=True):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
         """
