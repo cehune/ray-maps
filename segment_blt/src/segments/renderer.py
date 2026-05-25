@@ -18,11 +18,7 @@ import numpy as np
 
 def _make_blt_components(scene, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
     mmis        = MMIS()
-    propagation = Propagation(
-        kernel_radius=kernel_radius,
-        kernel_weight=kernel_weight,
-        num_prop_iterations=num_prop_iterations,
-    )
+    propagation = Propagation(num_prop_iterations=num_prop_iterations,)
     cluster = Cluster()
     cluster.set_scene_aabb(scene.bbox())
     samplers = Sampler.build_registry(SequentialSampler())

@@ -63,8 +63,10 @@ class Segment:
     cluster_idx: int = -1  
     technique: SegmentTechnique = SegmentTechnique.CAMERA
     
-    def __post_init__(self):
-        self.Le = self.x.Le if self.x.is_light else self.y.Le
+    def __post_init__(self):    
+        # SEGMENT PAPER SAYS DIRECTION DOESN"T MATTER, do all as direction from camera
+        if self.technique == SegmentTechnique.LIGHT:
+            self.x, self.y = self.y, self.x
         
         # assert self.y.si.is_valid(), "endpoint is not valid on segment!!!!"
         difference = self.y.p - self.x.p
@@ -84,5 +86,12 @@ class Segment:
         wi_world = dr.normalize(self.x.p - self.y.p)
         self.wi_local = mi.Frame3f(self.y.n).to_local(wi_world)
         self.y.si.wi = self.wi_local
+
+        # aka if light segment hits a light segment, hsould now use this le
+        self.Le = self.x.Le if self.x.is_light else self.y.Le
+
+
+    
+        
 
         

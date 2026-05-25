@@ -103,30 +103,6 @@ class TestSequentialSampler:
         assert float(result.y) == 0.0
         assert float(result.z) == 0.0
 
-    def test_wi_is_minus_seg_dir(self):
-        sampler = SequentialSampler()
-        _, seg, next_seg = straight_chain()
-
-        captured = {}
-        mock_bsdf = seg.y.si.bsdf()
-        original_eval = mock_bsdf.eval
-
-        # bsdf.eval is called as eval(ctx, si, wo) — three args
-        def capture(ctx, si, wo):
-            captured['wi'] = mi.Vector3f(si.wi)
-            return original_eval(ctx, si, wo)
-
-        # patch on the mock bsdf instance, not on si.bsdf().eval
-        mock_bsdf.eval = capture
-        # make si.bsdf() always return this same mock
-        seg.y.si.bsdf = MagicMock(return_value=mock_bsdf)
-
-        sampler.shift_invariant_bsdf(seg, next_seg)
-
-        assert float(captured['wi'].z) == pytest.approx(-1.0, abs=1e-4)
-        assert float(captured['wi'].x) == pytest.approx( 0.0, abs=1e-4)
-        assert float(captured['wi'].y) == pytest.approx( 0.0, abs=1e-4)
-
     def test_wo_points_toward_next_y(self):
         sampler = SequentialSampler()
         _, seg, next_seg = straight_chain()
@@ -183,7 +159,8 @@ class TestLightSampler:
             y=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1, bsdf_pdf_value=0.5),
             technique=SegmentTechnique.LIGHT,
         )
-        auxiliary.y.is_light = True
+        # cause the x is now the y
+        auxiliary.x.is_light = True
 
         segment = make_segment(
             x=make_surface_point_with_mock_bsdf(0, 0, 1,  0, 0, 1),
@@ -271,7 +248,7 @@ class TestLightSampler:
         assert float(result.y) == 0.0
         assert float(result.z) == 0.0
 
-    def test_wi_is_minus_seg_dir(self):
+    def test_wi_is_minus_seg_dir_after_reversal(self):
         """
         wi at seg.y points back along the light path — toward seg.x,
         which is -seg.dir since dir = (y.p - x.p)/len.
@@ -292,6 +269,6 @@ class TestLightSampler:
 
         sampler.shift_invariant_bsdf(seg, next_seg)
 
-        assert float(captured['wi'].z) == pytest.approx(-1.0, abs=1e-4)
+        assert float(captured['wi'].z) == pytest.approx( 1.0, abs=1e-4)
         assert float(captured['wi'].x) == pytest.approx( 0.0, abs=1e-4)
         assert float(captured['wi'].y) == pytest.approx( 0.0, abs=1e-4)

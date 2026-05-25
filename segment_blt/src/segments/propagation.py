@@ -8,51 +8,13 @@ import math
 from segments.mmis import MMIS
 
 class Propagation:
-    def __init__(self, kernel_radius, kernel_weight, num_prop_iterations = 12):
-        self.initial_radius = kernel_radius
-        self.kernel_radius = kernel_radius
-        self.kernel_weight = kernel_weight   # alpha in Knaus-Zwicker: 0.67
+    def __init__(self, num_prop_iterations = 12):
         self.num_prop_iterations = num_prop_iterations
         self._iteration = 1                  # current render iteration (1-indexed)
-        self.update_kernel_val()
-
-    def _update_kernel(self):
-        # Power-law decay: r_n = r_0 * n^(-alpha/2)  (Knaus-Zwicker 2011, Eq. 5)
-        # Exponential decay (r *= weight) collapses the kernel to zero by ~64 iterations.
-        self._iteration += 1
-        self.kernel_radius = self.initial_radius * (self._iteration ** (-self.kernel_weight / 2.0))
-        self.update_kernel_val()
-
-    def kernel_check_disc(self, seg_endpoint: SurfacePoint, next_endpoint: SurfacePoint):
-        """
-        More of a cylinder check than a disc, basically infinite cylinder
-        ||d||^2 - (d dot n)^2 < r^2
-        only measuring tangential distance, anywhere above or below though
-        check with Wenyou
-        """
-        
-        # Vector from center endpoint to candidate endpoint
-        offset = next_endpoint.p - seg_endpoint.p
-
-        # Component along the surface normal
-        normal_dist = dr.dot(offset, seg_endpoint.n)
-
-        # Remove the normal component to get tangent-plane projection
-        tangent_offset = offset - normal_dist * seg_endpoint.n
-
-        # Squared distance in tangent plane
-        tangent_dist_sq = dr.squared_norm(tangent_offset)
-
-        return tangent_dist_sq <= self.kernel_radius ** 2
-    
-    def update_kernel_val(self) -> float:
-        """K = 1 / (pi * r^2) for the uniform disc kernel."""
-        self.kernel_val = 1.0 / (math.pi * self.kernel_radius ** 2)
 
     def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
         out = mi.Color3f(0.0)
 
-        # --- Technique space 1: CAMERA sampler ---
         y_cluster_idx = cluster.endpoint_to_cluster[seg_idx * 2 + 1]
         start, end = cluster.cluster_ranges[y_cluster_idx]
         for flat_idx in cluster.sorted_indices[start:end]:
@@ -61,18 +23,16 @@ class Propagation:
                 continue
             if which_end == 0:  # y-endpoint of seg is near the x of the next
                 next_seg: Segment = cluster.segments[next_idx]
-                if next_seg.mmis_weight == 0.0:  # guard before kernel check
+                if next_seg.mmis_weight == 0.0:  
                     continue
-                if not self.kernel_check_disc(segment.y, next_seg.x):
-                    continue
+                
                 sampler = samplers.get(next_seg.technique)
                 if sampler is None:
                     continue
-                if sampler.technique_type == SegmentTechnique.CAMERA:
-                    f = sampler.shift_invariant_bsdf(segment, next_seg)
-                    contrib = next_seg.mmis_weight * f * next_seg.geom_term * next_seg.radiance_in
-                    out += contrib
-        # TODO: Light
+    
+                f = sampler.shift_invariant_bsdf(segment, next_seg)
+                contrib = next_seg.mmis_weight * f * next_seg.geom_term * next_seg.radiance_in
+                out += contrib
         return out
         
     def propagate_all_segments(self, cluster: Cluster, samplers):
@@ -82,7 +42,7 @@ class Propagation:
         
     def swap_segment_radiance(self, cluster: Cluster):
         for segment in cluster.segments:
-            if segment.y.is_light:
+            if segment.y.is_light or segment.x.is_light:
                 segment.radiance_in = segment.Le  # pin — never overwrite with radiance_out
             else:
                 segment.radiance_in = segment.radiance_out
@@ -95,8 +55,6 @@ class Propagation:
         for _ in range(self.num_prop_iterations):
             self.propagate_all_segments(cluster, samplers)
             self.swap_segment_radiance(cluster)
-
-        self._update_kernel()
 
     def iterate_propogation_vec(self, cluster: Cluster, pair_cache):
         """
@@ -114,7 +72,7 @@ class Propagation:
         # Initial radiance_in = Le for all segments
         Le = np.array([[float(s.Le.x), float(s.Le.y), float(s.Le.z)] for s in segs],
                       dtype=np.float64)  # (S, 3)
-        is_light = np.array([s.y.is_light for s in segs], dtype=bool)  # (S,)
+        is_light = np.array([s.y.is_light or s.x.is_light for s in segs], dtype=bool)
 
         rad_in = Le.copy()
 
@@ -149,8 +107,6 @@ class Propagation:
                 float(rad_in[seg_idx, 1]),
                 float(rad_in[seg_idx, 2]),
             )
-
-        self._update_kernel()
         # how much radiance is contributed per hop
-        print(f"expected gain per hop (pairs * weighted_fr): {(len(pair_cache.prop_i) / len(segs)) * weighted_fr.mean():.4f}")
+        # print(f"expected gain per hop (pairs * weighted_fr): {(len(pair_cache.prop_i) / len(segs)) * weighted_fr.mean():.4f}")
         

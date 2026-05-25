@@ -73,8 +73,10 @@ def build_pair_cache(cluster, samplers) -> PairCache:
     # Light-terminal segments (y.is_light) are intentionally NOT pre-marked here:
     # they should accumulate conditional PDFs from auxiliaries in their cluster
     # and receive a proper MMIS weight (1/p_sum), not be pinned to 1.0.
-    for seg_idx, seg in enumerate(segs):
-        if seg.x.is_camera or seg.x.is_light:
+    for seg_idx, segment in enumerate(segs):
+        if segment.x.is_camera or (
+                segment.technique == SegmentTechnique.LIGHT and segment.y.is_light
+            ):
             trivial_set.add(seg_idx)
 
     # boolean lookups over all segments — built once, reused per cluster

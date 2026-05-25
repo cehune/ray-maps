@@ -60,7 +60,9 @@ class MMIS:
 
     def compute_all_mmis_weights(self, cluster, samplers) -> None:
         for seg_idx, segment in enumerate(cluster.segments):
-            if segment.x.is_camera or segment.x.is_light:
+            if segment.x.is_camera or (
+                segment.technique == SegmentTechnique.LIGHT and segment.y.is_light
+            ):
                 segment.mmis_weight = 1.0
                 continue
             segment.mmis_weight = self.compute_mmis_weight(segment, seg_idx, cluster, samplers)

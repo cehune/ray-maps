@@ -136,11 +136,6 @@ def make_real_surface_point(scene, px, py, pz, dx, dy, dz, is_camera=False, is_l
     sp.is_light  = is_light
     return sp
 
-
-def make_propagator(kernel_radius=0.5, num_prop_iterations=1):
-    return Propagation(kernel_radius=kernel_radius, kernel_weight=1.0,
-                       num_prop_iterations=num_prop_iterations)
-
 # ── scene fixtures ────────────────────────────────────────────────────────────
 
 def make_two_plane_scene():
@@ -311,7 +306,7 @@ class TestHelp:
         cluster    = make_minimal_cluster([s_pred, s_light], kr)
         samplers   = make_samplers()
         mmis       = make_mmis()
-        propagator = make_propagator(kernel_radius=kr)
+        propagator = Propagation(num_prop_iterations=1)
 
         mmis.compute_all_mmis_weights(cluster, samplers)
         for s in cluster.segments:
@@ -337,7 +332,7 @@ class TestHelp:
             s_light.radiance_in = mi.Color3f(Le)
             cluster    = make_minimal_cluster([s_pred, s_light], 2.0)
             mmis       = make_mmis()
-            propagator = make_propagator(kernel_radius=2.0)
+            propagator = Propagation(num_prop_iterations=1)
             mmis.compute_all_mmis_weights(cluster, make_samplers())
             for s in cluster.segments:
                 s.radiance_in = s.Le
@@ -384,7 +379,7 @@ class TestHelp:
 
             cluster    = make_minimal_cluster(segs, kr)
             mmis       = make_mmis()
-            propagator = make_propagator(kernel_radius=kr, num_prop_iterations=n_hops)
+            propagator = Propagation(num_prop_iterations=n_hops)
             mmis.compute_all_mmis_weights(cluster, make_samplers())
             for s in cluster.segments:
                 s.radiance_in = s.Le
@@ -432,7 +427,7 @@ class TestHelp:
 
         cluster    = make_minimal_cluster(aux_segs + cont_segs, kr)
         mmis       = make_mmis()
-        propagator = make_propagator(kernel_radius=kr)
+        propagator = Propagation(num_prop_iterations=1)
         mmis.compute_all_mmis_weights(cluster, make_samplers())
         for s in cluster.segments:
             s.radiance_in = s.Le
@@ -444,47 +439,7 @@ class TestHelp:
             result = float(s.radiance_out[0])
             assert abs(result - expected) / expected < 0.1, \
                 f"aux[{i}]: got {result:.4e} expected {expected:.4e}"
-
-    def test_mmis_imbalanced_populations(self, scene):
-        """
-        n_aux != n_cont. Documents the known bug.
-        If this passes after test_mmis_balanced_populations passes,
-        the imbalance is handled correctly. If it fails, it quantifies the error.
-        """
-        Le, kr   = 1.0, 0.5
-        n_aux, n_cont = 5, 2
-
-        floor_pts = [hit(scene, i*0.01, 5, 0,  0,-1,0) for i in range(max(n_aux,n_cont))]
-        ceil_pts  = [hit(scene, i*0.01,-1, 0,  0, 1,0) for i in range(n_cont)]
-
-        aux_segs  = [seg(x=camera_point(i*0.01,10,0, 0,-1,0), y=floor_pts[i])
-                     for i in range(n_aux)]
-        cont_segs = [seg(x=floor_pts[i], y=ceil_pts[i], is_light=True, Le=Le)
-                     for i in range(n_cont)]
-        for s in cont_segs:
-            s.radiance_in = mi.Color3f(Le)
-
-        cluster    = make_minimal_cluster(aux_segs + cont_segs, kr)
-        mmis       = make_mmis()
-        propagator = make_propagator(kernel_radius=kr)
-        mmis.compute_all_mmis_weights(cluster, make_samplers())
-        for s in cluster.segments:
-            s.radiance_in = s.Le
-        propagator.propagate_all_segments(cluster, make_samplers())
-
-        K        = propagator.kernel_val
-        expected = K * Le
-        actual_ratio = n_cont / n_aux
-
-        for i, s in enumerate(aux_segs):
-            result = float(s.radiance_out[0])
-            # document what we get vs what we'd need
-            print(f"aux[{i}]: got {result:.4e}, "
-                  f"expected {expected:.4e}, "
-                  f"ratio {result/expected:.3f}, "
-                  f"n_cont/n_aux={actual_ratio:.3f}")
             
-
     def test_mmis_weight_nonzero_for_interior_segment(self, scene):
         """s_light is an interior segment (x not camera/light). Its mmis_weight must be nonzero."""
         bsdf_pdf = 1.0 / math.pi
@@ -574,7 +529,7 @@ class TestHelp:
 
         kr         = 2.0
         cluster    = make_minimal_cluster([s_pred, s_light], kr)
-        propagator = make_propagator(kernel_radius=kr)
+        propagator = Propagation(num_prop_iterations=1)
 
         result = propagator.propagate_segment(s_pred, 0, cluster, make_samplers())
         assert float(dr.max(result)) > 0, \
@@ -639,7 +594,7 @@ class TestHelp:
 
         kr         = 2.0
         cluster    = make_minimal_cluster([s_pred, s_light], kr)
-        propagator = make_propagator(kernel_radius=kr)
+        propagator = Propagation(num_prop_iterations=1)
 
         result = propagator.propagate_segment(s_pred, 0, cluster, make_samplers())
         assert float(dr.max(result)) > 0, \

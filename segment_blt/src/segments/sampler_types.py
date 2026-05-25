@@ -120,7 +120,7 @@ class SequentialSampler(Sampler):
     
 
 class LightSampler(Sampler):
-    technique_type = SegmentTechnique.CAMERA
+    technique_type = SegmentTechnique.LIGHT
     # TODO combine with sequential sampler, don't need to repeat so much code lol
     def conditional_pdf(self, segment: Segment, auxiliary: Segment):
         """
@@ -130,24 +130,24 @@ class LightSampler(Sampler):
         pdf oviously treats segment y 
         so it has to be auxiliary y light toward 
 
+        since the bsdf occurs at auxiliary x, we need to guard first on it's x
         """
-
-        if auxiliary.y.is_light or auxiliary.x.is_light:
+        if auxiliary.x.is_camera or auxiliary.x.is_light:
             return 0.0
             # couldn't have sampled it
-        delta = segment.y.p - auxiliary.y.p
+        delta = segment.x.p - auxiliary.x.p
         len_sq = float(dr.squared_norm(delta))
         if len_sq < 1e-10:
             return 0.0
 
         wo_world = dr.normalize(delta)
-        wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
+        wo_local = mi.Frame3f(auxiliary.x.n).to_local(wo_world)
 
         # incoming direction at auxiliary.x is along the segment direction
         # light path travels x→y, so incoming at x is -seg.dir
 
-        si = auxiliary.y.si
-        si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
+        si = auxiliary.x.si
+        si.wi = mi.Frame3f(auxiliary.x.n).to_local(auxiliary.dir)
 
         bsdf = si.bsdf()
         if bsdf is None:
@@ -161,13 +161,13 @@ class LightSampler(Sampler):
         except (TypeError, IndexError):
             pw = float(pw_result)
 
-        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
-        cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
+        cos_at_aux_x = float(dr.abs(dr.dot(auxiliary.x.n, wo_world)))
+        cos_at_seg_x = float(dr.abs(dr.dot(segment.x.n, wo_world)))
 
-        if cos_at_aux_y < 1e-6:
+        if cos_at_aux_x < 1e-6:
             return 0.0
 
-        return pw * cos_at_seg_y / len_sq
+        return pw * cos_at_seg_x / len_sq
 
     @staticmethod
     def shift_invariant_bsdf(seg: Segment, next_seg: Segment) -> mi.Color3f:
@@ -184,9 +184,10 @@ class LightSampler(Sampler):
         if bsdf is None:
             return mi.Color3f(0.0)
 
+        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
         cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
         if cos_o < 1e-6:
             return mi.Color3f(0.0)
         ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-
         return bsdf.eval(ctx, si, wo_local) / cos_o
+
