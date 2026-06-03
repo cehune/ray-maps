@@ -19,7 +19,7 @@ def test_light_path_returns_segments():
 
 
 def test_light_path_first_segment_is_from_emitter():
-    """First segment must start from a light surface point"""
+    """First segment must start from a light surface point AFTER REVERSAL"""
     scene = mi.load_file('../samples/cbox/cbox.xml')
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(1, 1)
@@ -27,8 +27,8 @@ def test_light_path_first_segment_is_from_emitter():
     for _ in range(20):
         path = sample_light_path(scene, sampler)
         if len(path) > 0:
-            assert path[0].x.is_light, \
-                "First segment x must be a light surface point"
+            assert path[0].y.is_light, \
+                "First segment y must be a light surface point"
             return
 
     assert False, "No valid path found"
@@ -95,7 +95,7 @@ def test_light_path_segments_are_connected():
             continue
 
         for i in range(len(path) - 1):
-            dist = dr.norm(path[i].y.p - path[i+1].x.p)
+            dist = dr.norm(path[i].x.p - path[i+1].y.p)
             assert dist < 1e-4, \
                 f"Segments {i} and {i+1} are not connected: gap {dist}"
         return

@@ -99,58 +99,70 @@ class TestMMIS:
             
     def test_nonvec_vec_parity(self):
         """
-        Non-vec (compute_all_mmis_weights) and vec (compute_all_mmis_weights_vec
-        via PairCache) must produce identical mmis_weight values for every segment.
+        Parity: compute_all_mmis_weights (non-vec) and compute_all_mmis_weights_vec
+        (via PairCache) must produce identical mmis_weight values per segment.
 
-        Uses a deterministic mock conditional_pdf that returns the same value for
-        any (segment, auxiliary) pair, so both code paths sum the same number of
-        contributions.
+        Setup: 1 camera-origin segment + 6 interior segments whose x-endpoints all
+        land in the same voxel. With 7 x-endpoints + 1 y-endpoint in that voxel,
+        we cross the sparse-cluster skip threshold (>5) in pair_cache.
+
+        A constant conditional_pdf is enough — both paths must agree on the
+        auxiliary set, and since each auxiliary contributes the same value,
+        equal counts ⇒ equal sums ⇒ equal weights.
         """
         from segments.pair_cache import build_pair_cache
 
-        # ---- build a small cluster of 4 segments ----
-        # s0 is camera-origin (trivial → weight pinned to 1.0)
-        # s1, s2, s3 are interior segments whose x-endpoints land near each other,
-        # so they all share an x-cluster and act as mutual auxiliaries.
+        # s0: camera-origin — trivial, weight pinned to 1.0
         s0 = make_segment(
             make_surface_point(0.0, 0.0, 0.0, 0, 1, 0, is_camera=True),
             make_surface_point(0.30, 0.30, 0.30, 0, 1, 0),
         )
-        s1 = make_segment(
-            make_surface_point(0.30, 0.30, 0.30, 0, 1, 0),
-            make_surface_point(0.60, 0.60, 0.60, 0, 1, 0),
-        )
-        s2 = make_segment(
-            make_surface_point(0.31, 0.30, 0.30, 0, 1, 0),
-            make_surface_point(0.70, 0.50, 0.50, 0, 1, 0),
-        )
-        s3 = make_segment(
-            make_surface_point(0.32, 0.31, 0.29, 0, 1, 0),
-            make_surface_point(0.55, 0.55, 0.65, 0, 1, 0),
-        )
+
+        # s1..s6: interior segments. Their x-endpoints cluster around (0.30, 0.30, 0.30)
+        # so they all share an x-cluster. Y-endpoints scattered so they don't co-cluster.
+        interior_data = [
+            ((0.30, 0.30, 0.30), (0.60, 0.60, 0.60)),
+            ((0.31, 0.30, 0.30), (0.70, 0.50, 0.50)),
+            ((0.32, 0.31, 0.29), (0.55, 0.55, 0.65)),
+            ((0.29, 0.30, 0.31), (0.50, 0.70, 0.55)),
+            ((0.30, 0.31, 0.32), (0.65, 0.55, 0.60)),
+            ((0.31, 0.29, 0.30), (0.58, 0.62, 0.58)),
+        ]
+        interior_segs = [
+            make_segment(
+                make_surface_point(*x, 0, 1, 0),
+                make_surface_point(*y, 0, 1, 0),
+            )
+            for x, y in interior_data
+        ]
+
+        all_segs = [s0] + interior_segs
 
         aabb = make_aabb([0, 0, 0], [1, 1, 1])
         c = Cluster(c=5)
         c.set_scene_aabb(aabb)
-        c.set_segments([s0, s1, s2, s3])
+        c.set_segments(all_segs)
         rng = np.random.default_rng(0)
         c.cluster(rng, voxel_size=0.2)
 
-        # ---- deterministic sampler: conditional_pdf returns 0.4 for any pair ----
-        # because both paths call conditional_pdf(j, t) with the same args, a
-        # constant return is enough to test that they accumulate the same set
-        # of (j, t) pairs.
+        # ---- sanity: confirm at least one voxel passes the sparse-skip threshold ----
+        voxel_sizes = [end - start for start, end in c.cluster_ranges]
+        max_voxel = max(voxel_sizes) if voxel_sizes else 0
+        assert max_voxel > 5, (
+            f"Test setup error: largest voxel has only {max_voxel} endpoints, "
+            f"would be skipped by pair_cache. Add more clustered segments."
+        )
+
+        # ---- deterministic mock: constant conditional_pdf ----
         mock_sampler = MagicMock()
         mock_sampler.technique_type = SegmentTechnique.CAMERA
         mock_sampler.conditional_pdf.return_value = 0.4
-        # shift_invariant_bsdf is called when building prop_fr; not relevant to
-        # MMIS weight, but must not crash.
         mock_sampler.shift_invariant_bsdf.return_value = mi.Color3f(0.0)
         samplers = {SegmentTechnique.CAMERA: mock_sampler}
 
         mmis = MMIS()
 
-        # ---- non-vec path ----
+        # ---- non-vec ----
         mmis.compute_all_mmis_weights(c, samplers)
         nonvec = np.array([s.mmis_weight for s in c.segments])
 
@@ -158,24 +170,27 @@ class TestMMIS:
         for s in c.segments:
             s.mmis_weight = 0.0
 
-        # ---- vec path ----
+        # ---- vec ----
         pair_cache = build_pair_cache(c, samplers)
         mmis.compute_all_mmis_weights_vec(c, pair_cache)
         vec = np.array([s.mmis_weight for s in c.segments])
 
-        # ---- parity ----
+        # ---- parity assertion ----
+        # Note: vec path clamps mmis_w at 20 * median(positive_weights).
+        # In this test, all non-trivial weights are equal (constant pdf), so the
+        # cap is 20× median == 20× the value itself, which never triggers.
         assert np.allclose(nonvec, vec, atol=1e-9), (
-            f"non-vec and vec MMIS weights disagree:\n"
+            f"non-vec vs vec MMIS weights disagree:\n"
             f"  non-vec: {nonvec}\n"
             f"  vec:     {vec}\n"
-            f"  max abs diff: {np.abs(nonvec - vec).max()}"
+            f"  max abs diff: {np.abs(nonvec - vec).max():.3e}"
         )
 
-        # sanity: trivial segment is pinned
+        # ---- semantic checks ----
         assert nonvec[0] == 1.0, "camera-origin segment should be trivial (weight=1.0)"
-
-        # sanity: at least one interior segment got contributions
-        assert np.any(nonvec[1:] > 0.0), (
-            "expected at least one interior segment to have a positive weight; "
-            "if all are zero the cluster setup didn't actually share auxiliaries"
+        assert np.all(nonvec[1:] > 0.0), (
+            "all interior segments should have positive weights — if any is zero, "
+            "either the cluster setup didn't share auxiliaries or the sparse-skip "
+            "is still firing"
         )
+        

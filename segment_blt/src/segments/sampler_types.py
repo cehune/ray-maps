@@ -172,6 +172,9 @@ class LightSampler(Sampler):
     @staticmethod
     def shift_invariant_bsdf(seg: Segment, next_seg: Segment) -> mi.Color3f:
         # same as camera version for diffuse — adjoint distinction matters for glossy
+        if seg.y.is_light or seg.y.is_camera:
+            return mi.Color3f(0.0)
+        
         wi_world = -seg.dir
         wo_world = dr.normalize(next_seg.y.p - seg.y.p)
 
