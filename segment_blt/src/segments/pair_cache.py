@@ -91,10 +91,20 @@ def build_pair_cache(cluster, samplers) -> PairCache:
 
     for _, (start, end) in enumerate(cluster.cluster_ranges):
         flat_indices = cluster.sorted_indices[start:end]
+        if len(flat_indices) <= 5:
+            continue
         meta = cluster.endpoint_metadata[flat_indices]  # (K, 2): (seg_idx, which_end)
 
         y_segs = meta[meta[:, 1] == 1, 0]  # segment indices whose y is in this cluster
         x_segs = meta[meta[:, 1] == 0, 0]  # segment indices whose x is in this cluster
+
+        if len(y_segs) > 0:
+            y_valid = np.array([
+                not (segs[i].technique == SegmentTechnique.LIGHT and segs[i].y.is_light)
+                for i in y_segs
+            ], dtype=bool)
+            y_segs = y_segs[y_valid]
+        # ─────────────────────────────────────────────────────────────────────
 
         if len(y_segs) == 0 or len(x_segs) == 0:
             continue
@@ -129,40 +139,37 @@ def build_pair_cache(cluster, samplers) -> PairCache:
     # evvaluate BSDF for propagation pairs (once; reused across all prop iters) ---
     P = len(prop_i_list)
     prop_fr = np.zeros((P, 3), dtype=np.float64)
-    valid_prop = np.ones(P, dtype=bool)
-
     for k, (i, j) in enumerate(zip(prop_i_list, prop_j_list)):
         seg_i, seg_j = segs[i], segs[j]
-        sampler = samplers.get(seg_j.technique)
+
+        # TODO: APPARENTLY ITS ALWAYS RADIANCE MODE
+        sampler = samplers.get(SegmentTechnique.CAMERA)
         if sampler is None:
-            valid_prop[k] = False
             continue
         fr = sampler.shift_invariant_bsdf(seg_i, seg_j)
         prop_fr[k] = [float(fr.x), float(fr.y), float(fr.z)]
 
-    # filter out any zero-technique pairs ( should be none)
-    if not np.all(valid_prop):
-        prop_i_arr  = np.array(prop_i_list, dtype=np.int32)[valid_prop]
-        prop_j_arr  = np.array(prop_j_list, dtype=np.int32)[valid_prop]
-        prop_fr     = prop_fr[valid_prop]
-    else:
-        prop_i_arr = np.array(prop_i_list, dtype=np.int32) if P > 0 else np.empty(0, np.int32)
-        prop_j_arr = np.array(prop_j_list, dtype=np.int32) if P > 0 else np.empty(0, np.int32)
+    prop_i_arr = np.array(prop_i_list, dtype=np.int32) if P > 0 else np.empty(0, np.int32)
+    prop_j_arr = np.array(prop_j_list, dtype=np.int32) if P > 0 else np.empty(0, np.int32)
 
     # evaluate conditional PDF for MMIS pairs (only once per propagation iter!!!!)
     mmis_j_arr = (np.concatenate(mmis_j_chunks).astype(np.int32)
               if mmis_j_chunks else np.empty(0, np.int32))
     mmis_t_arr = (np.concatenate(mmis_t_chunks).astype(np.int32)
                 if mmis_t_chunks else np.empty(0, np.int32))
+                
     M = len(mmis_j_arr)
     mmis_pdf = np.zeros(M, dtype=np.float64)
 
-    for k, (j, t) in enumerate(zip(mmis_j_arr, mmis_t_arr)):
-        seg_j = segs[j]
-        sampler_j = samplers.get(seg_j.technique)
-        if sampler_j is None:
+    for k in range(M):
+        j_idx = int(mmis_j_arr[k])
+        t_idx = int(mmis_t_arr[k])
+        seg_j = segs[j_idx]
+        seg_t = segs[t_idx]
+        sampler = samplers.get(seg_t.technique)   # auxiliary's technique
+        if sampler is None:
             continue
-        mmis_pdf[k] = sampler_j.conditional_pdf(seg_j, segs[t])
+        mmis_pdf[k] = sampler.conditional_pdf(seg_j, seg_t)    
 
     return PairCache(
         prop_i=prop_i_arr,

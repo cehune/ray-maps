@@ -599,7 +599,83 @@ class TestHelp:
         result = propagator.propagate_segment(s_pred, 0, cluster, make_samplers())
         assert float(dr.max(result)) > 0, \
             f"propagate_segment returned zero even with mmis_weight=1"
-        
+    
+    def test_single_pair_energy_conservation_with_factors_printed(self):
+        """
+        Two-segment setup with everything analytically computable:
+        - s_pred = (camera @ z=-1, p0 @ z=0)
+        - s_light = (p0 @ z=0, p1 @ z=1) with p1 emitting Le=1
+        - All surfaces Lambertian, albedo=1, normals = +z
+        - One cluster containing all endpoints
+
+        Expected per-factor:
+        mmis_w(s_light) = π   (1 / (1/π))
+        shift_invariant_bsdf  = 1/π  (Lambertian eval / cos)
+        geom_term(s_light)    = 1    (cos*cos/dist² = 1*1/1)
+        radiance_in(s_light)  = Le = 1
+        contrib               = π · 1/π · 1 · 1 = 1.0
+        """
+        Le_value = 1.0
+        bsdf_pdf = 1.0 / math.pi
+        bsdf_eval = mi.Color3f(1.0 / math.pi)  # Lambertian, albedo=1
+
+        p0 = make_surface_point_with_mock_bsdf(0, 0, 0, 0, 0, 1,
+                                            bsdf_pdf_value=bsdf_pdf,
+                                            bsdf_eval_value=bsdf_eval)
+        p1 = make_surface_point_with_mock_bsdf(0, 0, 1, 0, 0, 1,
+                                            bsdf_pdf_value=bsdf_pdf,
+                                            bsdf_eval_value=bsdf_eval)
+
+        s_pred  = seg(x=camera_point(0, 0, -1, 0, 0, 1), y=p0)
+        s_light = seg(x=p0, y=p1, is_light=True, Le=Le_value)
+        s_light.radiance_in = mi.Color3f(Le_value)
+
+        cluster    = make_minimal_cluster([s_pred, s_light], kernel_radius=2.0)
+        samplers   = make_samplers()
+        mmis       = MMIS()
+        propagator = Propagation(num_prop_iterations=1)
+
+        # ---- MMIS ----
+        mmis.compute_all_mmis_weights(cluster, samplers)
+        mmis_w_pred  = float(s_pred.mmis_weight)
+        mmis_w_light = float(s_light.mmis_weight)
+
+        # ---- propagation ----
+        for s in cluster.segments:
+            s.radiance_in = s.Le
+        propagator.propagate_all_segments(cluster, samplers)
+
+        # ---- gather factors ----
+        sampler = samplers[SegmentTechnique.CAMERA]
+        f_color = sampler.shift_invariant_bsdf(s_pred, s_light)
+        f_val   = float(f_color[0])
+        geom    = float(s_light.geom_term)
+        rad_in  = float(s_light.radiance_in[0])
+        result  = float(s_pred.radiance_out[0])
+        expected_contrib = mmis_w_light * f_val * geom * rad_in
+
+        # ---- print the breakdown ----
+        print("\n── single-pair sanity ────────────────────────────────────")
+        print(f"  mmis_w(s_pred)  = {mmis_w_pred:.6f}   (expected 1.0   — trivial)")
+        print(f"  mmis_w(s_light) = {mmis_w_light:.6f}   (expected π   = {math.pi:.6f})")
+        print(f"  f (BSDF)        = {f_val:.6f}   (expected 1/π = {1/math.pi:.6f})")
+        print(f"  geom_term       = {geom:.6f}   (expected 1.0)")
+        print(f"  radiance_in     = {rad_in:.6f}   (expected 1.0)")
+        print(f"  contrib (calc)  = {expected_contrib:.6f}   (expected 1.0)")
+        print(f"  radiance_out    = {result:.6f}   (expected 1.0)")
+        print("──────────────────────────────────────────────────────────")
+
+        # ---- assertions ----
+        assert math.isclose(mmis_w_pred,  1.0,        rel_tol=1e-6), "s_pred not trivial"
+        assert math.isclose(mmis_w_light, math.pi,    rel_tol=1e-4), \
+            f"mmis_w(s_light) drift: got {mmis_w_light}, expected π"
+        assert math.isclose(f_val,        1/math.pi,  rel_tol=1e-4), \
+            f"BSDF eval drift: got {f_val}, expected 1/π"
+        assert math.isclose(geom,         1.0,        rel_tol=1e-4), \
+            f"geom_term drift: got {geom}, expected 1.0"
+        assert math.isclose(result,       1.0,        rel_tol=0.05), \
+            f"PROPAGATION DRIFT: got {result}, expected 1.0 — investigate which factor diverges"
+            
 
 class TestClustering:
 

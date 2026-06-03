@@ -16,16 +16,19 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
     mmis        = MMIS()
     propagation = Propagation(num_prop_iterations=num_prop_iterations,)
     cluster = Cluster()
     cluster.set_scene_aabb(scene.bbox())
-    samplers = Sampler.build_registry(SequentialSampler())
+    if add_light_samples:
+        samplers = Sampler.build_registry(SequentialSampler(), LightSampler())
+    else:
+        samplers = Sampler.build_registry(SequentialSampler())
     return cluster, mmis, propagation, samplers
 
 
-def _sample_segments(scene, sensor, sampler, height, width):
+def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_light_samples = True):
     """
     Sample one camera path per pixel.
     Returns (segment_pool, camera_first_segments).
@@ -33,6 +36,7 @@ def _sample_segments(scene, sensor, sampler, height, width):
     """
     segment_pool = SegmentPoolV2()
     camera_first_segments = []
+    n_pixels = height * width
 
     for y in range(height):
         for x in range(width):
@@ -55,8 +59,21 @@ def _sample_segments(scene, sensor, sampler, height, width):
             else:
                 camera_first_segments.append(None)
 
-    return segment_pool, camera_first_segments
+    # ── Light paths (β · n_pixels total) ──────────────────────────────
+    if add_light_samples:
+        n_light_paths = int(beta * n_pixels)
+        light_paths_added = 0
+        for _ in range(n_light_paths):
+            light_segments = sample_light_path(scene, sampler)
+            if light_segments:
+                segment_pool.add_path(light_segments)
+                light_paths_added += 1
 
+        print(f"  sampled {len(camera_first_segments)} camera paths, "
+            f"{light_paths_added}/{n_light_paths} light paths "
+            f"(β={beta})")
+
+    return segment_pool, camera_first_segments
 
 def _final_gather(camera_first_segments, height, width):
     """
@@ -151,9 +168,9 @@ class Renderer:
 
     def _render_iterate_nonvec(self, scene, sensor, sampler, height, width,
                                cluster, mmis, propagation, samplers, iteration=0,
-                               verbose=False):
+                               verbose=False, beta = 0.25, add_light_samples = True):
         segment_pool, camera_first_segments = _sample_segments(
-            scene, sensor, sampler, height, width
+            scene, sensor, sampler, height, width, beta, add_light_samples
         )
 
         if not segment_pool.paths:
@@ -178,7 +195,7 @@ class Renderer:
 
     def render_nonvec(self, scene, height=128, width=128, n_iterations=8,
                       kernel_radius=16, kernel_weight=0.67,
-                      num_prop_iterations=4, verbose=True):
+                      num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True):
         """
         BLT render using the non-vectorized MMIS + propagation path.
         Use as a reference to compare against render_vec().
@@ -186,7 +203,7 @@ class Renderer:
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
         cluster, mmis, propagation, samplers = _make_blt_components(
-            scene, kernel_radius, kernel_weight, num_prop_iterations
+            scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations
         )
 
         for i in range(n_iterations):
@@ -197,7 +214,7 @@ class Renderer:
             accum += self._render_iterate_nonvec(
                 scene, sensor, sampler, height, width,
                 cluster, mmis, propagation, samplers,
-                iteration=i, verbose=verbose,
+                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples
             )
 
         return accum / n_iterations
@@ -206,11 +223,11 @@ class Renderer:
 
     def _render_iterate_vec(self, scene, sensor, sampler, height, width,
                             cluster, mmis, propagation, samplers, iteration=0,
-                            verbose=False):
+                            verbose=False, beta = 0.25, add_light_samples = True):
         
         t0 = time.time()
         segment_pool, camera_first_segments = _sample_segments(
-            scene, sensor, sampler, height, width
+            scene, sensor, sampler, height, width, beta, add_light_samples
         )
         print(f"sampling: {time.time()-t0:.1f}s")
 
@@ -230,6 +247,13 @@ class Renderer:
         mmis.compute_all_mmis_weights_vec(cluster, pair_cache)
         print(f"mmis: {time.time()-t0:.1f}s")
 
+        if iteration == 0:
+            
+            diagnose_cluster_factors(cluster, samplers, pair_cache, label=f"iter{iteration}")
+            n_voxels = len(cluster.cluster_ranges)
+            for vi in [0, n_voxels // 2, n_voxels - 1]:
+                diagnose_voxel_cluster(cluster, pair_cache, vi, label=f"iter{iteration}")
+                
         # Propagation (vec)
         t0 = time.time()
         propagation.iterate_propogation_vec(cluster, pair_cache)
@@ -240,30 +264,31 @@ class Renderer:
 
         t0 = time.time()
         bin = _final_gather(camera_first_segments, height, width)
+
+        trace_firefly(bin, camera_first_segments, height, width, 5)
         print(f"sampling: {time.time()-t0:.1f}s")
         return bin
 
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
                    kernel_radius=16, kernel_weight=0.67,
-                   num_prop_iterations=8, verbose=True):
+                   num_prop_iterations=8, verbose=True, beta = 0.25, add_light_samples = True):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
         """
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
         cluster, mmis, propagation, samplers = _make_blt_components(
-            scene, kernel_radius, kernel_weight, num_prop_iterations
+            scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations
         )
 
         for i in range(n_iterations):
-            print(f"[vec] iter {i}/{n_iterations}"
-                  f" — r={propagation.kernel_radius:.3f}")
+            print(f"[vec] iter {i}/{n_iterations}")
             sampler = mi.load_dict({'type': 'independent', 'sample_count': 1})
             sampler.seed(i, width * height)
             accum += self._render_iterate_vec(
                 scene, sensor, sampler, height, width,
                 cluster, mmis, propagation, samplers,
-                iteration=i, verbose=verbose,
+                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples
             )
 
         return accum / n_iterations
@@ -272,7 +297,7 @@ class Renderer:
 
     def save_render_by_scene_path(self, scene_path, save_file_path="output.png",
                                   width=128, height=128, n_iterations=16,
-                                  mode='vec'):
+                                  mode='vec', beta=0.25, add_light_samples = True):
         """
         mode: 'ref'    → simple path tracer (render)
               'nonvec' → BLT non-vectorized
@@ -280,17 +305,29 @@ class Renderer:
         """
         mi.set_variant(self.variant)
         scene = mi.load_file(scene_path)
-
+        # report_bsdf_types(scene)
+        # force_white_lambertian(scene)
+        print("add lgith: ", add_light_samples)
         if mode == 'ref':
             image = self.render(scene, width, height, spp=n_iterations)
         elif mode == 'nonvec':
             image = self.render_nonvec(scene, height, width,
-                                       n_iterations=n_iterations)
+                                       n_iterations=n_iterations, beta=beta,
+                                       add_light_samples=add_light_samples)
         else:
             image = self.render_vec(scene, height, width,
-                                    n_iterations=n_iterations, verbose=False)
+                                    n_iterations=n_iterations, verbose=False,
+                                    beta=beta, add_light_samples=add_light_samples)
+        
 
-        plt.imsave(save_file_path, np.clip(image ** (1 / 2.2), 0, 1))
+        # plt.imsave(save_file_path, np.clip(image ** (1 / 2.2), 0, 1))
+        save_with_tonemap(save_file_path, image)
+
+        norm = image / np.percentile(image, 99.5)
+        print(f"After normalization:")
+        print(f"  median: {np.median(norm):.3f}")
+        print(f"  p50/p90/p99: {np.percentile(norm, [50, 90, 99])}")
+        print(f"  saturated count: {(norm > 1.0).sum()}")
         print(f'saved {save_file_path}')
 
     # ── Legacy entry point (kept for back-compat) ─────────────────────────────
@@ -298,3 +335,163 @@ class Renderer:
     def render_iterate_loop(self, scene, height=128, width=128, n_iterations=8):
         """Alias for render_vec() with default BLT parameters."""
         return self.render_vec(scene, height, width, n_iterations=n_iterations)
+    
+def diagnose_cluster_factors(cluster, samplers, pair_cache, *, label=""):
+    """
+    Print magnitude statistics of every factor in the propagation product:
+        contrib_per_pair = mmis_w · f_r · geom · rad_in
+    Compares the medians/means to what you'd see in a unit-conserving
+    cornell-box-style setup (everything ~O(1)).
+    """
+    import numpy as np
+
+    segs = cluster.segments
+    S = len(segs)
+    if S == 0:
+        print(f"[{label}] empty cluster — skipped")
+        return
+
+    mmis_w = np.array([float(s.mmis_weight) for s in segs])
+    geom   = np.array([float(s.geom_term) for s in segs])
+    rad_in = np.array([float(s.radiance_in[0]) for s in segs])
+    Le     = np.array([float(s.Le[0]) for s in segs])
+
+    P = len(pair_cache.prop_i)
+    if P > 0:
+        fr = pair_cache.prop_fr[:, 0]                  # red channel
+        j  = pair_cache.prop_j
+        weighted_fr = fr * mmis_w[j] * geom[j]
+        contrib = weighted_fr * rad_in[j]
+    else:
+        fr = weighted_fr = contrib = np.array([0.0])
+
+    def stats(name, arr, expected_order=None):
+        nz = arr[arr > 0] if (arr > 0).any() else arr
+        med  = np.median(nz)
+        mn   = nz.min()
+        mx   = nz.max()
+        hint = f"   expected ~O({expected_order})" if expected_order else ""
+        print(f"  {name:18s}  med={med:.3e}  min={mn:.3e}  max={mx:.3e}  n={len(nz)}{hint}")
+
+    print(f"\n── cluster diagnostics [{label}] ─────────────────────────────")
+    print(f"  segments: {S}    prop pairs: {P}    avg pairs/seg: {P/S:.1f}")
+    stats("mmis_w",       mmis_w,      "1 (or π for diffuse interiors)")
+    stats("geom",         geom,        "1 — drops with distance²")
+    stats("Le",           Le,          "0 except light-terminators")
+    stats("radiance_in",  rad_in,      "1 if at light, lower elsewhere")
+    if P > 0:
+        stats("f_r (BSDF)",    fr,          "1/π ≈ 0.318 for Lambertian")
+        stats("weighted_fr",   weighted_fr, "1 if energy-conserving")
+        stats("contrib/pair",  contrib,     "1 if Le=1 reachable")
+        gain = (P / S) * weighted_fr.mean()
+        print(f"  estimated gain/hop = (pairs/seg) · mean(weighted_fr) = {gain:.4f}")
+        print(f"     ▸ gain ≈ 1.0 means energy-conserving; gain < 0.5 means lossy")
+    print("──────────────────────────────────────────────────────────")
+
+
+def diagnose_voxel_cluster(cluster, pair_cache, voxel_idx, *, label=""):
+    """
+    Print the same factor stats restricted to one voxel-cluster (one entry
+    of cluster.cluster_ranges).  Useful for comparing a 'central' voxel vs
+    a sparse corner voxel — the latter is often the source of grid artifacts.
+    """
+    import numpy as np
+
+    start, end = cluster.cluster_ranges[voxel_idx]
+    flat = cluster.sorted_indices[start:end]
+    meta = cluster.endpoint_metadata[flat]
+    seg_ids = np.unique(meta[:, 0])   # segments touching this voxel
+
+    if len(seg_ids) == 0:
+        print(f"[{label}] voxel {voxel_idx} empty"); return
+
+    mmis_w = np.array([float(cluster.segments[i].mmis_weight) for i in seg_ids])
+    geom   = np.array([float(cluster.segments[i].geom_term)   for i in seg_ids])
+    rad_in = np.array([float(cluster.segments[i].radiance_in[0]) for i in seg_ids])
+
+    # filter pair_cache to pairs whose receiver (prop_i) is in this voxel
+    seg_set = set(seg_ids.tolist())
+    mask = np.array([int(i) in seg_set for i in pair_cache.prop_i], dtype=bool)
+    fr = pair_cache.prop_fr[mask, 0] if mask.any() else np.array([0.0])
+
+    print(f"\n── voxel {voxel_idx} [{label}] ──")
+    print(f"  segments in voxel: {len(seg_ids)}    pairs receiving here: {mask.sum()}")
+    for name, arr in [("mmis_w", mmis_w), ("geom", geom),
+                      ("rad_in", rad_in), ("f_r", fr)]:
+        nz = arr[arr > 0] if (arr > 0).any() else arr
+        if len(nz):
+            print(f"  {name:8s}  med={np.median(nz):.3e}  "
+                  f"min={nz.min():.3e}  max={nz.max():.3e}")
+            
+
+def force_white_lambertian(scene):
+    """Replace every diffuse BSDF in the scene with albedo=1 Lambertian."""
+    white = mi.load_dict({
+        'type': 'diffuse',
+        'reflectance': {'type': 'rgb', 'value': [1.0, 1.0, 1.0]},
+    })
+    for shape in scene.shapes():
+        bsdf = shape.bsdf()
+        if bsdf is not None:
+            # Mitsuba doesn't expose a `set_bsdf` directly on shapes, so we
+            # mutate the BSDF's reflectance in place via params traversal.
+            params = mi.traverse(bsdf)
+            for k in params.keys():
+                if 'reflectance' in k.lower() and 'value' in k.lower():
+                    params[k] = mi.ScalarColor3f(1.0, 1.0, 1.0)
+            params.update()
+
+def report_bsdf_types(scene):
+    print("\nBSDF inventory:")
+    from mitsuba import BSDFFlags as F
+    for shape in scene.shapes():
+        bsdf = shape.bsdf()
+        if bsdf is None:
+            continue
+        flags = bsdf.flags()
+        is_delta = bool(flags & (F.DeltaReflection | F.DeltaTransmission))
+        is_glossy = bool(flags & (F.GlossyReflection | F.GlossyTransmission))
+        is_diffuse = bool(flags & (F.DiffuseReflection | F.DiffuseTransmission))
+        category = []
+        if is_diffuse: category.append("diffuse")
+        if is_glossy: category.append("glossy")
+        if is_delta: category.append("SPECULAR — not filtered by BLT")
+        print(f"  {shape.id() or shape}: {', '.join(category) or 'unknown'}")
+
+def trace_firefly(accum_image, camera_first_segments, height, width, top_k=5):
+    """Find the brightest pixels and dump exactly what made them bright."""
+    lum = accum_image.sum(axis=2)
+
+    # Pixels that look saturated after gamma — these are the "fireflies" you see
+    SATURATION_THRESHOLD = 1.0  # ≈ where gamma 2.2 starts clipping
+    saturated = lum > SATURATION_THRESHOLD
+    print(f"\nSaturated pixels: {saturated.sum()} / {height*width} "
+          f"({100*saturated.sum()/(height*width):.2f}%)")
+    print(f"  lum distribution: med={np.median(lum):.3e}  "
+          f"p90={np.percentile(lum, 90):.3e}  p99={np.percentile(lum, 99):.3e}  "
+          f"max={lum.max():.3e}")
+
+    # Sample a few "in-the-wild" saturated pixels (not the light)
+    sat_idxs = np.where(saturated.flatten() & (lum.flatten() < 30))[0]
+    if len(sat_idxs) == 0:
+        print("  no non-light saturated pixels")
+        return
+    print(f"\n── 5 random non-light saturated pixels ──")
+    np.random.shuffle(sat_idxs)
+    for idx in sat_idxs[:5]:
+        y, x = idx // width, idx % width
+        first_seg = camera_first_segments[idx]
+        if first_seg is None: continue
+        print(f"  pixel ({x},{y}) lum={lum[y,x]:.3e}")
+        print(f"    rad_in={tuple(float(first_seg.radiance_in[k]) for k in range(3))}")
+        print(f"    mmis_w={first_seg.mmis_weight:.3e}")
+        print(f"    geom={first_seg.geom_term:.3e}")
+        print(f"    y.is_light={first_seg.y.is_light}")
+
+def save_with_tonemap(path, image, gamma=2.2, white_percentile=99.5):
+    """Normalize so the 99.5th percentile maps to 1.0, then gamma."""
+    white = np.percentile(image, white_percentile)
+    if white > 0:
+        image = image / white
+    img = np.clip(image ** (1 / gamma), 0, 1)
+    plt.imsave(path, img)

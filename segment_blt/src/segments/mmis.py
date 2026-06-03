@@ -88,6 +88,12 @@ class MMIS:
         nz = p_sum > 0.0000001
         weights = np.where(nz, 1.0 / p_sum, 0.0)
 
+
+        nz_weights = weights[weights > 0]
+        if len(nz_weights) > 0:
+            cap = 20.0 * np.median(nz_weights)   # tune in [10, 100]
+            weights = np.minimum(weights, cap)
+
         # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 
         for seg_idx, seg in enumerate(cluster.segments):
             seg.mmis_weight = float(weights[seg_idx])
