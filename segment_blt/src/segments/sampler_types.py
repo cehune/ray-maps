@@ -54,21 +54,23 @@ class SequentialSampler(Sampler):
         wo_world = dr.normalize(delta)   # unit connection vector from auxiliary.y → segment.y
         wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
 
-        # pw (s'|yi, si) bsdf sampling pdf to next direction (just along si+1)
-        # this is along x to y
-        # set wi correctly on a copy of auxiliary.y.si
+        # auxiliary.y.si is shared across MMIS calls — save/restore si.wi so we
+        # don't leave a stale wi behind for the next caller. Cheap, no allocation.
         si = auxiliary.y.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-
-        pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
         try:
-            pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return 0.0
+
+            pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
+            try:
+                pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
 
         cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
 
@@ -105,19 +107,23 @@ class SequentialSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
-    
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
+
 
 class LightSampler(Sampler):
     technique_type = SegmentTechnique.LIGHT
@@ -147,19 +153,22 @@ class LightSampler(Sampler):
         # light path travels x→y, so incoming at x is -seg.dir
 
         si = auxiliary.x.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.x.n).to_local(auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-        
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-
-        pw_result = bsdf.eval_pdf(ctx, si, wo_local)
         try:
-            pw = float(pw_result[1])
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return 0.0
+
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+
+            pw_result = bsdf.eval_pdf(ctx, si, wo_local)
+            try:
+                pw = float(pw_result[1])
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
 
         cos_at_aux_x = float(dr.abs(dr.dot(auxiliary.x.n, wo_world)))
         cos_at_seg_x = float(dr.abs(dr.dot(segment.x.n, wo_world)))
@@ -180,17 +189,21 @@ class LightSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-        return bsdf.eval(ctx, si, wo_local) / cos_o
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+            return bsdf.eval(ctx, si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
 

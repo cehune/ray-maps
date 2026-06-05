@@ -16,10 +16,13 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None):
     mmis        = MMIS()
-    propagation = Propagation(num_prop_iterations=num_prop_iterations,)
-    cluster = Cluster()
+    mmis.mmis_clamp_factor = mmis_clamp_factor
+    propagation = Propagation(num_prop_iterations=num_prop_iterations,
+                              apply_kernel_correction=apply_kernel_correction,
+                              geom_clamp_factor=geom_clamp_factor)
+    cluster = Cluster(c=cluster_c)
     cluster.set_scene_aabb(scene.bbox())
     if add_light_samples:
         samplers = Sampler.build_registry(SequentialSampler(), LightSampler())
@@ -151,7 +154,8 @@ class Renderer:
                     segments   = sample_camera_path(scene, sampler, ray, ray_weight, si)
                     L          = evaluate_path_base(segments)
                     self.segment_pool.add_camera_path(segments)
-                    pixel_color += ray_weight * L
+                    # ray_weight is already baked into segments[0].throughput
+                    pixel_color += L
 
                 accum[y, x] = np.array([
                     float(pixel_color[0]),
@@ -207,8 +211,8 @@ class Renderer:
         )
 
         for i in range(n_iterations):
-            print(f"[nonvec] iter {i}/{n_iterations}"
-                  f" — r={propagation.kernel_radius:.3f}")
+            # print(f"[nonvec] iter {i}/{n_iterations}"
+            #       f" — r={propagation.kernel_radius:.3f}")
             sampler = mi.load_dict({'type': 'independent', 'sample_count': 1})
             sampler.seed(i, width * height)
             accum += self._render_iterate_nonvec(
@@ -247,17 +251,16 @@ class Renderer:
         mmis.compute_all_mmis_weights_vec(cluster, pair_cache)
         print(f"mmis: {time.time()-t0:.1f}s")
 
-        if iteration == 0:
-            
-            diagnose_cluster_factors(cluster, samplers, pair_cache, label=f"iter{iteration}")
-            n_voxels = len(cluster.cluster_ranges)
-            for vi in [0, n_voxels // 2, n_voxels - 1]:
-                diagnose_voxel_cluster(cluster, pair_cache, vi, label=f"iter{iteration}")
-                
         # Propagation (vec)
         t0 = time.time()
         propagation.iterate_propogation_vec(cluster, pair_cache)
         print(f"prop: {time.time()-t0:.1f}s")
+
+        if iteration == 0:
+            diagnose_cluster_factors(cluster, samplers, pair_cache, label=f"iter{iteration}")
+            n_voxels = len(cluster.cluster_ranges)
+            for vi in [0, n_voxels // 2, n_voxels - 1]:
+                diagnose_voxel_cluster(cluster, pair_cache, vi, label=f"iter{iteration}")
 
         if verbose:
             _diag("vec", cluster, pair_cache, camera_first_segments)
@@ -271,18 +274,40 @@ class Renderer:
 
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
                    kernel_radius=16, kernel_weight=0.67,
-                   num_prop_iterations=8, verbose=True, beta = 0.25, add_light_samples = True):
+                   num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True,
+                   cluster_c=10, apply_kernel_correction=False, progressive=True,
+                   geom_clamp_factor=None, mmis_clamp_factor=None):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
+
+        cluster_c: target endpoints per voxel (Cluster.c). Bigger → wider kernel
+            → more pairs per receiver → lower variance, more bias. Default 10.
+        apply_kernel_correction: DIAGNOSTIC — multiply per-pair weight by 1/K of
+            the receiver's cluster. Tests whether the BLT paper's 1/K factor is
+            genuinely missing from the estimator. Default False.
+        progressive: enable Knaus-Zwicker progressive kernel shrinkage —
+            voxel_size at outer iter n = voxel_size_0 * n^(-α/2). When True,
+            this method bumps cluster._iteration each outer iter so the existing
+            _compute_progressive_voxel_size() in Cluster actually takes effect
+            (it never did before — counter was never incremented anywhere).
+            Default True; set False to A/B against the old behavior.
         """
         sensor = scene.sensors()[0]
         accum  = np.zeros((height, width, 3), dtype=np.float32)
         cluster, mmis, propagation, samplers = _make_blt_components(
-            scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations
+            scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations,
+            cluster_c=cluster_c, apply_kernel_correction=apply_kernel_correction,
+            geom_clamp_factor=geom_clamp_factor, mmis_clamp_factor=mmis_clamp_factor,
         )
 
         for i in range(n_iterations):
-            print(f"[vec] iter {i}/{n_iterations}")
+            if progressive:
+                # MUST be set BEFORE _render_iterate_vec runs cluster.cluster(), since
+                # _compute_progressive_voxel_size reads self._iteration. Without this,
+                # every outer iter re-uses voxel_size_0 and there's no kernel shrinkage.
+                cluster._iteration = i
+            print(f"[vec] iter {i}/{n_iterations}"
+                  f"{f'   voxel_size={cluster.voxel_size:.3e}' if i > 0 else ''}")
             sampler = mi.load_dict({'type': 'independent', 'sample_count': 1})
             sampler.seed(i, width * height)
             accum += self._render_iterate_vec(
@@ -296,15 +321,22 @@ class Renderer:
     # ── 4. Save helpers ───────────────────────────────────────────────────────
 
     def save_render_by_scene_path(self, scene_path, save_file_path="output.png",
-                                  width=128, height=128, n_iterations=16,
-                                  mode='vec', beta=0.25, add_light_samples = True):
+                                  width=128, height=128, n_iterations=8,
+                                  mode='vec', beta=0.25, add_light_samples = False):
         """
         mode: 'ref'    → simple path tracer (render)
               'nonvec' → BLT non-vectorized
               'vec'    → BLT vectorized  (default)
         """
         mi.set_variant(self.variant)
-        scene = mi.load_file(scene_path)
+        #scene = mi.load_file(scene_path)
+        scene_dict = mi.cornell_box()
+        width = 200
+        height = 200
+        scene_dict["sensor"]["film"]["width"] = width
+        scene_dict["sensor"]["film"]["height"] = height
+        scene_dict["integrator"] = {"type": "path", "max_depth": -1}
+        scene = mi.load_dict(scene_dict)
         # report_bsdf_types(scene)
         # force_white_lambertian(scene)
         print("add lgith: ", add_light_samples)
@@ -324,11 +356,10 @@ class Renderer:
         save_with_tonemap(save_file_path, image)
 
         norm = image / np.percentile(image, 99.5)
-        print(f"After normalization:")
-        print(f"  median: {np.median(norm):.3f}")
-        print(f"  p50/p90/p99: {np.percentile(norm, [50, 90, 99])}")
-        print(f"  saturated count: {(norm > 1.0).sum()}")
-        print(f'saved {save_file_path}')
+        img = np.array(image)
+        print(f"mean: {img.mean():.4f}")
+        print(f"max:  {img.max():.4f}")
+        print(f"% pixels > 1.0: {(img > 1.0).mean()*100:.1f}%")
 
     # ── Legacy entry point (kept for back-compat) ─────────────────────────────
 
@@ -373,8 +404,23 @@ def diagnose_cluster_factors(cluster, samplers, pair_cache, *, label=""):
         hint = f"   expected ~O({expected_order})" if expected_order else ""
         print(f"  {name:18s}  med={med:.3e}  min={mn:.3e}  max={mx:.3e}  n={len(nz)}{hint}")
 
+    # zero-coverage diagnostic: how many segments receive NO propagation pairs?
+    # camera-first segments with zero coverage = pixels that get only direct hits.
+    if P > 0:
+        incoming = np.bincount(pair_cache.prop_i, minlength=S)
+    else:
+        incoming = np.zeros(S, dtype=np.int64)
+    is_cam_first = np.array([s.x.is_camera for s in segs], dtype=bool)
+    n_zero       = int((incoming == 0).sum())
+    n_cam        = int(is_cam_first.sum())
+    n_zero_cam   = int(((incoming == 0) & is_cam_first).sum())
+
     print(f"\n── cluster diagnostics [{label}] ─────────────────────────────")
     print(f"  segments: {S}    prop pairs: {P}    avg pairs/seg: {P/S:.1f}")
+    print(f"  zero-incoming:    {n_zero}/{S} ({100*n_zero/max(S,1):.1f}%)  "
+          f"med={int(np.median(incoming))}  max={int(incoming.max())}")
+    print(f"  camera-first 0:   {n_zero_cam}/{n_cam} ({100*n_zero_cam/max(n_cam,1):.1f}%)"
+          f"   ← pixels with NO indirect contribution")
     stats("mmis_w",       mmis_w,      "1 (or π for diffuse interiors)")
     stats("geom",         geom,        "1 — drops with distance²")
     stats("Le",           Le,          "0 except light-terminators")
@@ -414,14 +460,14 @@ def diagnose_voxel_cluster(cluster, pair_cache, voxel_idx, *, label=""):
     mask = np.array([int(i) in seg_set for i in pair_cache.prop_i], dtype=bool)
     fr = pair_cache.prop_fr[mask, 0] if mask.any() else np.array([0.0])
 
-    print(f"\n── voxel {voxel_idx} [{label}] ──")
-    print(f"  segments in voxel: {len(seg_ids)}    pairs receiving here: {mask.sum()}")
-    for name, arr in [("mmis_w", mmis_w), ("geom", geom),
-                      ("rad_in", rad_in), ("f_r", fr)]:
-        nz = arr[arr > 0] if (arr > 0).any() else arr
-        if len(nz):
-            print(f"  {name:8s}  med={np.median(nz):.3e}  "
-                  f"min={nz.min():.3e}  max={nz.max():.3e}")
+    # print(f"\n── voxel {voxel_idx} [{label}] ──")
+    # print(f"  segments in voxel: {len(seg_ids)}    pairs receiving here: {mask.sum()}")
+    # for name, arr in [("mmis_w", mmis_w), ("geom", geom),
+    #                   ("rad_in", rad_in), ("f_r", fr)]:
+    #     nz = arr[arr > 0] if (arr > 0).any() else arr
+    #     if len(nz):
+    #         print(f"  {name:8s}  med={np.median(nz):.3e}  "
+    #               f"min={nz.min():.3e}  max={nz.max():.3e}")
             
 
 def force_white_lambertian(scene):
@@ -488,10 +534,49 @@ def trace_firefly(accum_image, camera_first_segments, height, width, top_k=5):
         print(f"    geom={first_seg.geom_term:.3e}")
         print(f"    y.is_light={first_seg.y.is_light}")
 
-def save_with_tonemap(path, image, gamma=2.2, white_percentile=99.5):
-    """Normalize so the 99.5th percentile maps to 1.0, then gamma."""
-    white = np.percentile(image, white_percentile)
-    if white > 0:
-        image = image / white
-    img = np.clip(image ** (1 / gamma), 0, 1)
-    plt.imsave(path, img)
+def save_with_tonemap(path, image, gamma=2.2, exposure=None, target_grey=0.18):
+    """
+    Robust tonemap for HDR debug renders.
+
+    Pipeline:
+      1. Exposure: scale so the MEDIAN luminance maps to `target_grey` (0.18 ≈
+         middle grey). Median is used instead of 99.5%ile because fireflies
+         inflate the tail and make percentile-based exposure lie about the
+         bulk brightness — that's exactly the failure mode that made our BLT
+         output "look dim" even when its mean matched ref.
+      2. Reinhard compression: x → x / (1 + x). Bright pixels saturate softly
+         instead of clipping, so fireflies don't punch holes in the image and
+         don't push neighboring pixels into 1.0.
+      3. Gamma.
+
+    Pass `exposure=<float>` to override auto-exposure with a fixed scale —
+    useful when comparing renders A/B (same exposure → directly comparable).
+
+    Compare two renders with matched exposure:
+        save_with_tonemap("a.png", img_a, exposure=2.0)
+        save_with_tonemap("b.png", img_b, exposure=2.0)
+    """
+    img = np.asarray(image, dtype=np.float64)
+
+    # luminance for exposure decisions only (apply scaling to all channels)
+    lum = img.sum(-1) if img.ndim == 3 else img
+
+    if exposure is None:
+        med = float(np.median(lum[lum > 0])) if (lum > 0).any() else 0.0
+        # scale so median luma maps to `target_grey` (post-Reinhard, post-gamma the
+        # bulk lands near middle grey on screen). Reinhard halves at x=1, so we
+        # aim a touch above target_grey pre-compression.
+        exposure = (target_grey / med) if med > 0 else 1.0
+
+    scaled = img * exposure
+
+    # per-channel Reinhard — preserves hue better than luminance-based variants
+    compressed = scaled / (1.0 + scaled)
+
+    out = np.clip(compressed ** (1.0 / gamma), 0.0, 1.0)
+    plt.imsave(path, out.astype(np.float32))
+
+    # one-line summary so you can see what exposure was chosen
+    print(f"  tonemap: exposure={exposure:.3e}  "
+          f"median_lum={float(np.median(lum)):.3e}  "
+          f"max_lum={float(lum.max()):.3e}")

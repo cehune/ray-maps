@@ -36,6 +36,10 @@ class MMIS:
     should own
     the summation loop, the 1/p_sum inversion, the cluster lookup — the algorithm structure that is sampler-agnostic"""
 
+    # Firefly suppression on MMIS weight: cap at mmis_clamp_factor × median(nonzero w).
+    # None disables. Sane range [10, 100]; trade-off is bias (smaller) vs variance (larger).
+    mmis_clamp_factor: float | None = None
+
     def compute_mmis_weight(self, segment, main_seg_idx, cluster: Cluster, samplers) -> float:
         """
         For unidirectional: sum conditional PDFs over all segments in cluster,
@@ -85,14 +89,14 @@ class MMIS:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
 
         # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable)
-        nz = p_sum > 0.0000001
+        nz = p_sum > 0.00001
         weights = np.where(nz, 1.0 / p_sum, 0.0)
 
-
-        nz_weights = weights[weights > 0]
-        if len(nz_weights) > 0:
-            cap = 20.0 * np.median(nz_weights)   # tune in [10, 100]
-            weights = np.minimum(weights, cap)
+        if self.mmis_clamp_factor is not None:
+            nz_weights = weights[weights > 0]
+            if len(nz_weights) > 0:
+                cap = float(self.mmis_clamp_factor) * np.median(nz_weights)
+                weights = np.minimum(weights, cap)
 
         # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 
         for seg_idx, seg in enumerate(cluster.segments):
