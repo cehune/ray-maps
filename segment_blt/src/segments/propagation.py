@@ -8,9 +8,20 @@ import math
 from segments.mmis import MMIS
 
 class Propagation:
-    def __init__(self, num_prop_iterations = 12):
+    def __init__(self, num_prop_iterations = 12, apply_kernel_correction: bool = False,
+                 geom_clamp_factor: float | None = None):
         self.num_prop_iterations = num_prop_iterations
         self._iteration = 1                  # current render iteration (1-indexed)
+        # DIAGNOSTIC toggle: multiply each pair's contribution by 1/K(cluster_of(i.y))
+        self.apply_kernel_correction = apply_kernel_correction
+        # Firefly suppression: cap segment.geom_term at geom_clamp_factor × median(geom)
+        # before building per-pair weights. None disables clamping entirely.
+        # Trade-off: smaller factor → tighter cap → less variance but more (negative) bias.
+        #   20  → ~5% under (loses energy from close-range bounces)
+        #   50  → expected ~0–2% bias, moderate firefly suppression
+        #   100 → near-zero bias, keeps the natural firefly tail
+        #   None→ unbiased in expectation, full firefly tail (slow convergence)
+        self.geom_clamp_factor = geom_clamp_factor
 
     def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
         out = mi.Color3f(0.0)
@@ -85,9 +96,35 @@ class Propagation:
             mmis_w = np.array([float(s.mmis_weight) for s in segs], dtype=np.float64)
             geom   = np.array([float(s.geom_term)   for s in segs], dtype=np.float64)
 
+            # Firefly suppression on geom_term (1/len² explodes for short segments).
+            # Median-relative so the cap scales with scene units. Bias/variance tradeoff
+            # is controlled by self.geom_clamp_factor (set in __init__; None = off).
+            if self.geom_clamp_factor is not None:
+                geom_nz = geom[geom > 0]
+                if len(geom_nz) > 0:
+                    geom_cap = float(self.geom_clamp_factor) * np.median(geom_nz)
+                    geom = np.minimum(geom, geom_cap)
+
             # Pre-multiply BSDF with static mmis_weight and geom_term for each pair:
             # weighted_fr[k] = prop_fr[k] * mmis_w[j[k]] * geom[j[k]]   shape (P, 3)
             weighted_fr = pair_cache.prop_fr * (mmis_w[j] * geom[j])[:, np.newaxis]
+
+            # OPTIONAL: 1/K kernel-area correction. K = tilt / voxel_size² (a density).
+            # 1/K = voxel_size² / tilt has units of area. We multiply the per-pair
+            # weight by 1/K for the cluster that owns the receiver's y endpoint
+            # (which is where the local integration happens).
+            if self.apply_kernel_correction and hasattr(cluster, "cluster_kernel_values"):
+                if not hasattr(cluster, "endpoint_to_cluster"):
+                    cluster.build_reverse_map()
+                if len(cluster.cluster_kernel_values) == 0:
+                    cluster.compute_cluster_kernel_values()
+                K = cluster.cluster_kernel_values  # (C,)
+                # cluster index of receiver i's y endpoint
+                recv_cluster = cluster.endpoint_to_cluster[pair_cache.prop_i * 2 + 1]
+                inv_K = np.where(K[recv_cluster] > 0, 1.0 / K[recv_cluster], 0.0)
+                weighted_fr = weighted_fr * inv_K[:, np.newaxis]
+                print(f"  [kernel-correction ON] median 1/K = {np.median(inv_K):.3e}, "
+                      f"max 1/K = {inv_K.max():.3e}")
 
         for _ in range(self.num_prop_iterations):
             rad_out = np.zeros((S, 3), dtype=np.float64)

@@ -138,8 +138,8 @@ def sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=16, rr_sta
 
 
 def evaluate_path_base(segments: list[Segment]) -> mi.Color3f:
-    # TODO: drop once the MMIS and propogation work!
-    # stupid estimator that just selects last segment's emitter contribution
+    # BSDF-only unidirectional path tracer (no NEE). Unbiased but high-variance
+    # for small lights — fine as a convergence reference.
     if not segments:
         return mi.Color3f(0.0)
 
@@ -151,8 +151,12 @@ def evaluate_path_base(segments: list[Segment]) -> mi.Color3f:
     if dr.all(Le == mi.Color3f(0.0)):
         return mi.Color3f(0.0)
 
-    # throughput on last segment already contains full bsdf_weight product
-    return last_seg.throughput * Le
+    # Each segment.throughput holds only its own bounce weight (segment 0 = ray_weight,
+    # later segments = per-bounce bsdf_weight). The path integrand is the product.
+    throughput = mi.Color3f(1.0)
+    for seg in segments:
+        throughput = throughput * seg.throughput
+    return throughput * Le
 
 def render_pixel(scene, sampler, ray) -> mi.Color3f:
     segments = sample_camera_path(scene, sampler, ray)

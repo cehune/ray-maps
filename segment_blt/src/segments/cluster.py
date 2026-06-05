@@ -235,6 +235,7 @@ class Cluster:
         self.seg_y_normals = np.array(
             [[float(s.y.n[k]) for k in range(3)] for s in self.segments], dtype=np.float64
         )
+        self._iteration += 1
 
     def get_cluster_segments(self, cluster_idx: int) -> list:
         """
