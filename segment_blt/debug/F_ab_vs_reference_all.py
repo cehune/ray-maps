@@ -29,7 +29,7 @@ import mitsuba as mi
 from segments.renderer import Renderer
 
 
-DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-200x200-d-1/reference.exr"
+DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-128x128-d-1/reference.exr"
 
 
 def reinhard_tonemap(img, exposure, gamma=2.2):
@@ -51,13 +51,14 @@ def main():
     ap.add_argument("--ref", default=DEFAULT_REF, help="reference EXR")
     ap.add_argument("--blt-path", default=None,
                     help="optional: load a saved BLT image instead of rendering")
-    ap.add_argument("--n-iter", type=int, default=8, help="BLT render iterations (averaging)")
+    ap.add_argument("--n-iter", type=int, default=24, help="BLT render iterations (averaging)")
     ap.add_argument("--N", type=int, default=8, help="num_prop_iterations per render")
     ap.add_argument("--c", type=int, default=30, help="cluster_c")
     ap.add_argument("--target-grey", type=float, default=0.18,
                     help="middle-grey for auto-exposure (off ref median)")
     ap.add_argument("--geom-clamp", default="none",
                     help="geom_term cap factor (× median). 'none' = off.")
+    ap.add_argument("--geom-clamp-mode", default="hard", choices=("hard", "soft"))
     ap.add_argument("--mmis-clamp", default="none",
                     help="mmis_weight cap factor (× median). 'none' = off.")
     args = ap.parse_args()
@@ -83,6 +84,7 @@ def main():
             scene, height=H, width=W, n_iterations=args.n_iter,
             num_prop_iterations=args.N, cluster_c=args.c,
             geom_clamp_factor=geom_f, mmis_clamp_factor=mmis_f,
+            geom_clamp_mode=args.geom_clamp_mode,
             verbose=False, beta=0.1, add_light_samples=False,
         )
 
@@ -129,7 +131,7 @@ def main():
     axes[2].axis("off")
     plt.colorbar(im, ax=axes[2], fraction=0.046)
     plt.tight_layout()
-    out = os.path.join(os.path.dirname(__file__), "F_ab_vs_reference.png")
+    out = os.path.join(os.path.dirname(__file__), "F_ab_vs_reference_100_iterations_15kernel.png")
     plt.savefig(out, dpi=110); plt.close()
     print(f"\nsaved: {out}")
 

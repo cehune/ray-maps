@@ -34,7 +34,7 @@ import mitsuba as mi
 from segments.renderer import Renderer, _make_blt_components
 
 
-DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-200x200-d-1/reference.exr"
+DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-128x128-d-1/reference.exr"
 
 
 def parse_factor_list(items):
@@ -84,7 +84,7 @@ def run_one(scene, sensor, renderer, H, W, max_iter, c, N, geom_f, mmis_f, progr
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default=DEFAULT_REF)
-    ap.add_argument("--max-iter", type=int, default=8)
+    ap.add_argument("--max-iter", type=int, default=24)
     ap.add_argument("--width", type=int, default=128, help="lower for speed when sweeping")
     ap.add_argument("--c", type=int, default=30)
     ap.add_argument("--N", type=int, default=8)

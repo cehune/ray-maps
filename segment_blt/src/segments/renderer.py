@@ -16,13 +16,14 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3):
     mmis        = MMIS()
     mmis.mmis_clamp_factor = mmis_clamp_factor
     propagation = Propagation(num_prop_iterations=num_prop_iterations,
                               apply_kernel_correction=apply_kernel_correction,
-                              geom_clamp_factor=geom_clamp_factor)
-    cluster = Cluster(c=cluster_c)
+                              geom_clamp_factor=geom_clamp_factor,
+                              geom_clamp_mode=geom_clamp_mode)
+    cluster = Cluster(c=cluster_c, alpha=alpha)
     cluster.set_scene_aabb(scene.bbox())
     if add_light_samples:
         samplers = Sampler.build_registry(SequentialSampler(), LightSampler())
@@ -275,8 +276,9 @@ class Renderer:
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
                    kernel_radius=16, kernel_weight=0.67,
                    num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True,
-                   cluster_c=10, apply_kernel_correction=False, progressive=True,
-                   geom_clamp_factor=None, mmis_clamp_factor=None):
+                   cluster_c=30, apply_kernel_correction=False, progressive=True,
+                   geom_clamp_factor=200.0, mmis_clamp_factor=None,
+                   geom_clamp_mode="hard", alpha=0.2):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
 
@@ -298,6 +300,7 @@ class Renderer:
             scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations,
             cluster_c=cluster_c, apply_kernel_correction=apply_kernel_correction,
             geom_clamp_factor=geom_clamp_factor, mmis_clamp_factor=mmis_clamp_factor,
+            geom_clamp_mode=geom_clamp_mode, alpha=alpha,
         )
 
         for i in range(n_iterations):

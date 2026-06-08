@@ -9,19 +9,20 @@ from segments.mmis import MMIS
 
 class Propagation:
     def __init__(self, num_prop_iterations = 12, apply_kernel_correction: bool = False,
-                 geom_clamp_factor: float | None = None):
+                 geom_clamp_factor: float | None = None, geom_clamp_mode: str = "hard"):
         self.num_prop_iterations = num_prop_iterations
         self._iteration = 1                  # current render iteration (1-indexed)
         # DIAGNOSTIC toggle: multiply each pair's contribution by 1/K(cluster_of(i.y))
         self.apply_kernel_correction = apply_kernel_correction
-        # Firefly suppression: cap segment.geom_term at geom_clamp_factor × median(geom)
-        # before building per-pair weights. None disables clamping entirely.
-        # Trade-off: smaller factor → tighter cap → less variance but more (negative) bias.
-        #   20  → ~5% under (loses energy from close-range bounces)
-        #   50  → expected ~0–2% bias, moderate firefly suppression
-        #   100 → near-zero bias, keeps the natural firefly tail
-        #   None→ unbiased in expectation, full firefly tail (slow convergence)
+        # Firefly suppression on geom_term. Two knobs:
+        #   geom_clamp_factor: cap = factor × median(geom). None disables entirely.
+        #   geom_clamp_mode: 'hard' → np.minimum(geom, cap)  (brick wall, max bias)
+        #                    'soft' → geom * cap / (cap + geom)  (Reinhard-style)
+        # Soft loses less energy from the legitimate tail at the same `factor`.
         self.geom_clamp_factor = geom_clamp_factor
+        if geom_clamp_mode not in ("hard", "soft"):
+            raise ValueError(f"geom_clamp_mode must be 'hard' or 'soft', got {geom_clamp_mode!r}")
+        self.geom_clamp_mode = geom_clamp_mode
 
     def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
         out = mi.Color3f(0.0)
@@ -98,12 +99,17 @@ class Propagation:
 
             # Firefly suppression on geom_term (1/len² explodes for short segments).
             # Median-relative so the cap scales with scene units. Bias/variance tradeoff
-            # is controlled by self.geom_clamp_factor (set in __init__; None = off).
+            # is controlled by self.geom_clamp_factor and self.geom_clamp_mode.
             if self.geom_clamp_factor is not None:
                 geom_nz = geom[geom > 0]
                 if len(geom_nz) > 0:
                     geom_cap = float(self.geom_clamp_factor) * np.median(geom_nz)
-                    geom = np.minimum(geom, geom_cap)
+                    if self.geom_clamp_mode == "soft":
+                        # Reinhard: leaves values << cap untouched, asymptotes at cap.
+                        denom = geom_cap + geom
+                        geom = np.where(denom > 0, geom * geom_cap / denom, geom)
+                    else:
+                        geom = np.minimum(geom, geom_cap)
 
             # Pre-multiply BSDF with static mmis_weight and geom_term for each pair:
             # weighted_fr[k] = prop_fr[k] * mmis_w[j[k]] * geom[j[k]]   shape (P, 3)
