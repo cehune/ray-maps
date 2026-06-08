@@ -35,7 +35,7 @@ import mitsuba as mi
 from segments.renderer import Renderer, _make_blt_components
 
 
-DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-200x200-d-1/reference.exr"
+DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-128x128-d-1/reference.exr"
 
 
 def load_ref(path, W, H):
@@ -67,13 +67,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default=DEFAULT_REF)
     ap.add_argument("--max-iter", type=int, default=32)
-    ap.add_argument("--width", type=int, default=200)
-    ap.add_argument("--height", type=int, default=200)
+    ap.add_argument("--width", type=int, default=128)
+    ap.add_argument("--height", type=int, default=128)
     ap.add_argument("--c", type=int, default=30, help="cluster_c")
     ap.add_argument("--N", type=int, default=8, help="num_prop_iterations")
     ap.add_argument("--no-progressive", action="store_true",
                     help="disable Knaus-Zwicker progressive kernel shrinkage "
                          "(by default progressive is ON, matching render_vec's new default)")
+    ap.add_argument("--geom-clamp", default="none",
+                    help="geom_term cap factor (× median). 'none' = off.")
+    ap.add_argument("--geom-clamp-mode", default="hard", choices=("hard", "soft"))
+    ap.add_argument("--alpha", type=float, default=0.25,
+                    help="Knaus-Zwicker α. Smaller = slower shrinkage = better "
+                         "coverage. Paper uses 2/3 but with 5-10× more sample "
+                         "density. Default 0.2 matches our budget.")
     args = ap.parse_args()
 
     W, H = args.width, args.height
@@ -84,8 +91,11 @@ def main():
     sensor = scene.sensors()[0]
     renderer = Renderer()
 
+    geom_f = None if str(args.geom_clamp).lower() in ("none", "off") else float(args.geom_clamp)
     cluster, mmis, propagation, samplers = _make_blt_components(
         scene, add_light_samples=False, num_prop_iterations=args.N, cluster_c=args.c,
+        geom_clamp_factor=geom_f, geom_clamp_mode=args.geom_clamp_mode,
+        alpha=args.alpha,
     )
 
     accum = np.zeros((H, W, 3), dtype=np.float64)
