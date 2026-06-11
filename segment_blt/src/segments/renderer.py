@@ -16,13 +16,14 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3, geom_clamp_growth=0.0):
     mmis        = MMIS()
     mmis.mmis_clamp_factor = mmis_clamp_factor
     propagation = Propagation(num_prop_iterations=num_prop_iterations,
                               apply_kernel_correction=apply_kernel_correction,
                               geom_clamp_factor=geom_clamp_factor,
-                              geom_clamp_mode=geom_clamp_mode)
+                              geom_clamp_mode=geom_clamp_mode,
+                              geom_clamp_growth=geom_clamp_growth)
     cluster = Cluster(c=cluster_c, alpha=alpha)
     cluster.set_scene_aabb(scene.bbox())
     if add_light_samples:
@@ -278,7 +279,7 @@ class Renderer:
                    num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True,
                    cluster_c=30, apply_kernel_correction=False, progressive=True,
                    geom_clamp_factor=200.0, mmis_clamp_factor=None,
-                   geom_clamp_mode="hard", alpha=0.2):
+                   geom_clamp_mode="hard", alpha=0.2, geom_clamp_growth=0.0):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
 
@@ -301,6 +302,7 @@ class Renderer:
             cluster_c=cluster_c, apply_kernel_correction=apply_kernel_correction,
             geom_clamp_factor=geom_clamp_factor, mmis_clamp_factor=mmis_clamp_factor,
             geom_clamp_mode=geom_clamp_mode, alpha=alpha,
+            geom_clamp_growth=geom_clamp_growth,
         )
 
         for i in range(n_iterations):
@@ -525,17 +527,17 @@ def trace_firefly(accum_image, camera_first_segments, height, width, top_k=5):
     if len(sat_idxs) == 0:
         print("  no non-light saturated pixels")
         return
-    print(f"\n── 5 random non-light saturated pixels ──")
-    np.random.shuffle(sat_idxs)
-    for idx in sat_idxs[:5]:
-        y, x = idx // width, idx % width
-        first_seg = camera_first_segments[idx]
-        if first_seg is None: continue
-        print(f"  pixel ({x},{y}) lum={lum[y,x]:.3e}")
-        print(f"    rad_in={tuple(float(first_seg.radiance_in[k]) for k in range(3))}")
-        print(f"    mmis_w={first_seg.mmis_weight:.3e}")
-        print(f"    geom={first_seg.geom_term:.3e}")
-        print(f"    y.is_light={first_seg.y.is_light}")
+    # print(f"\n── 5 random non-light saturated pixels ──")
+    # np.random.shuffle(sat_idxs)
+    # for idx in sat_idxs[:5]:
+    #     y, x = idx // width, idx % width
+    #     first_seg = camera_first_segments[idx]
+    #     if first_seg is None: continue
+    #     print(f"  pixel ({x},{y}) lum={lum[y,x]:.3e}")
+    #     print(f"    rad_in={tuple(float(first_seg.radiance_in[k]) for k in range(3))}")
+    #     print(f"    mmis_w={first_seg.mmis_weight:.3e}")
+    #     print(f"    geom={first_seg.geom_term:.3e}")
+    #     print(f"    y.is_light={first_seg.y.is_light}")
 
 def save_with_tonemap(path, image, gamma=2.2, exposure=None, target_grey=0.18):
     """

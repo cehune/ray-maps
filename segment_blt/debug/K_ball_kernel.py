@@ -21,6 +21,7 @@ Usage:
     python K_ball_kernel.py --max-iter 32 --radius 0.05 --progressive
 """
 from _setup import cornell_scene
+from _cache import save_render, load_render
 
 import argparse
 import os
@@ -197,6 +198,8 @@ def main():
     ap.add_argument("--progressive", action="store_true",
                     help="shrink radius via Knaus-Zwicker α=0.2 per iter")
     ap.add_argument("--alpha", type=float, default=0.2)
+    ap.add_argument("--refresh", action="store_true",
+                    help="ignore cached EXR/metrics and re-render")
     args = ap.parse_args()
 
     W = H = args.width
@@ -223,35 +226,58 @@ def main():
         geom_clamp_factor=args.geom_clamp, geom_clamp_mode="hard",
     )
 
-    accum = np.zeros((H, W, 3), dtype=np.float64)
-    rmses, mrs, pair_counts = [], [], []
-    radii = []
+    prog_tag = f"prog_a{args.alpha}" if args.progressive else "fixed"
+    cache_tag = (f"K_w{W}_i{args.max_iter}_r{args.radius}_{prog_tag}"
+                 f"_N{args.N}_g{int(args.geom_clamp)}")
+    hit = None if args.refresh else load_render(cache_tag)
+    if hit is not None and hit["meta"] is not None:
+        m = hit["meta"]
+        rmses, mrs, pair_counts = m["rmses"], m["mrs"], m["pair_counts"]
+        running = hit["image"]
+        n_segments = m.get("n_segments", 0)
+        print(f"   (cache hit: {cache_tag})")
+        if m.get("ref") != os.path.basename(args.ref):
+            print(f"   ⚠ cached metrics vs '{m.get('ref')}', current ref "
+                  f"'{os.path.basename(args.ref)}' — pass --refresh to recompute")
+    else:
+        accum = np.zeros((H, W, 3), dtype=np.float64)
+        rmses, mrs, pair_counts = [], [], []
+        radii = []
 
-    r0 = args.radius
-    for i in range(args.max_iter):
-        # Knaus-Zwicker progressive on the BALL radius
-        if args.progressive and i > 0:
-            r = r0 * (i ** (-args.alpha / 2))
-        else:
-            r = r0
-        radii.append(r)
+        r0 = args.radius
+        for i in range(args.max_iter):
+            # Knaus-Zwicker progressive on the BALL radius
+            if args.progressive and i > 0:
+                r = r0 * (i ** (-args.alpha / 2))
+            else:
+                r = r0
+            radii.append(r)
 
-        print(f"\n── iter {i+1}/{args.max_iter}  radius={r:.4e} ──")
-        t0 = time.time()
-        img, n_pairs = render_one_iter_ball(
-            scene, sensor, renderer, H, W,
-            cluster, mmis, propagation, samplers,
-            iteration=i, radius=r,
-        )
-        dt = time.time() - t0
-        accum += img.astype(np.float64)
-        running = accum / (i + 1)
-        rmse = float(np.sqrt(((running - ref) ** 2).mean()))
-        mr = float(running.sum(-1).mean() / max(ref_mean, 1e-12))
-        rmses.append(rmse)
-        mrs.append(mr)
-        pair_counts.append(n_pairs)
-        print(f"   pairs={n_pairs:,}  RMSE={rmse:.4e}  mean_ratio={mr:.4f}  ({dt:.1f}s)")
+            print(f"\n── iter {i+1}/{args.max_iter}  radius={r:.4e} ──")
+            t0 = time.time()
+            img, n_pairs = render_one_iter_ball(
+                scene, sensor, renderer, H, W,
+                cluster, mmis, propagation, samplers,
+                iteration=i, radius=r,
+            )
+            dt = time.time() - t0
+            accum += img.astype(np.float64)
+            running = accum / (i + 1)
+            rmse = float(np.sqrt(((running - ref) ** 2).mean()))
+            mr = float(running.sum(-1).mean() / max(ref_mean, 1e-12))
+            rmses.append(rmse)
+            mrs.append(mr)
+            pair_counts.append(n_pairs)
+            print(f"   pairs={n_pairs:,}  RMSE={rmse:.4e}  mean_ratio={mr:.4f}  ({dt:.1f}s)")
+        n_segments = len(cluster.segments)
+        save_render(cache_tag, running, meta={
+            "config": {"W": W, "max_iter": args.max_iter, "radius": args.radius,
+                       "progressive": args.progressive, "alpha": args.alpha,
+                       "N": args.N, "geom_clamp": args.geom_clamp, "lookup": "ball"},
+            "ref": os.path.basename(args.ref),
+            "rmses": rmses, "mrs": mrs, "pair_counts": pair_counts,
+            "n_segments": n_segments,
+        })
 
     # ── plot ──────────────────────────────────────────────────────
     iters = np.arange(1, args.max_iter + 1)
@@ -303,8 +329,7 @@ def main():
     print(f"\nsaved: {out}")
 
     # Coverage stats — how many pairs/receiver on average?
-    avg_pairs = np.mean(pair_counts) / max(len(cluster.segments), 1)
-    print(f"\naverage pairs / segment (last iter) = {pair_counts[-1] / max(len(cluster.segments), 1):.1f}")
+    print(f"\naverage pairs / segment (last iter) = {pair_counts[-1] / max(n_segments, 1):.1f}")
     print(f"compare against voxel-grid baseline at c=30: ~50 pairs/segment")
 
 

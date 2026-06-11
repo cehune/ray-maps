@@ -26,6 +26,7 @@ Usage:
     python G_convergence.py --max-iter 32 --width 128
 """
 from _setup import cornell_scene
+from _cache import save_render, load_render
 
 import argparse
 import os
@@ -35,7 +36,7 @@ import mitsuba as mi
 from segments.renderer import Renderer, _make_blt_components
 
 
-DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-128x128-d-1/reference.exr"
+DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-50x50-d-1/reference.exr"
 
 
 def load_ref(path, W, H):
@@ -53,7 +54,7 @@ def load_ref(path, W, H):
 
 def render_one_iter(renderer, scene, sensor, height, width, cluster,
                     mmis, propagation, samplers, iteration, beta=0.1):
-    """Run one BLT iteration; returns the per-iter contribution image."""
+    """Run one seg iteration; returns the per-iter contribution image."""
     sampler = mi.load_dict({"type": "independent", "sample_count": 1})
     sampler.seed(iteration, width * height)
     return renderer._render_iterate_vec(
@@ -81,6 +82,8 @@ def main():
                     help="Knaus-Zwicker α. Smaller = slower shrinkage = better "
                          "coverage. Paper uses 2/3 but with 5-10× more sample "
                          "density. Default 0.2 matches our budget.")
+    ap.add_argument("--refresh", action="store_true",
+                    help="ignore cached EXR/metrics and re-render")
     args = ap.parse_args()
 
     W, H = args.width, args.height
@@ -98,33 +101,49 @@ def main():
         alpha=args.alpha,
     )
 
-    accum = np.zeros((H, W, 3), dtype=np.float64)
-    iters = []
-    rmses = []
-    mean_ratios = []
-
     progressive = not args.no_progressive
-    for i in range(args.max_iter):
-        if progressive:
-            cluster._iteration = i   # mirror what render_vec now does
-        print(f"\n── iter {i+1}/{args.max_iter} "
-              f"(c={args.c}, N={args.N}, progressive={progressive}) ──")
-        img = render_one_iter(renderer, scene, sensor, H, W,
-                              cluster, mmis, propagation, samplers, iteration=i)
-        accum += img.astype(np.float64)
-        running = accum / (i + 1)
+    cache_tag = (f"G_w{W}x{H}_i{args.max_iter}_c{args.c}_N{args.N}"
+                 f"_{'prog' if progressive else 'noprog'}_a{args.alpha}"
+                 f"_g{args.geom_clamp}")
+    hit = None if args.refresh else load_render(cache_tag)
+    if hit is not None and hit["meta"] is not None:
+        m = hit["meta"]
+        rmses, mean_ratios = np.array(m["rmses"]), np.array(m["mrs"])
+        running = hit["image"]
+        print(f"   (cache hit: {cache_tag})")
+        if m.get("ref") != os.path.basename(args.ref):
+            print(f"   ⚠ cached metrics vs '{m.get('ref')}', current ref "
+                  f"'{os.path.basename(args.ref)}' — pass --refresh to recompute")
+    else:
+        accum = np.zeros((H, W, 3), dtype=np.float64)
+        rmses, mean_ratios = [], []
+        for i in range(args.max_iter):
+            if progressive:
+                cluster._iteration = i   # mirror what render_vec now does
+            print(f"\n── iter {i+1}/{args.max_iter} "
+                  f"(c={args.c}, N={args.N}, progressive={progressive}) ──")
+            img = render_one_iter(renderer, scene, sensor, H, W,
+                                  cluster, mmis, propagation, samplers, iteration=i)
+            accum += img.astype(np.float64)
+            running = accum / (i + 1)
 
-        # linear-space RMSE per channel (matches baseline.rmse)
-        rmse = float(np.sqrt(np.mean((running - ref) ** 2)))
-        mr = float(running.sum(-1).mean() / max(ref.sum(-1).mean(), 1e-12))
-        iters.append(i + 1)
-        rmses.append(rmse)
-        mean_ratios.append(mr)
-        print(f"   running RMSE = {rmse:.4e}   mean_ratio = {mr:.4f}")
+            # linear-space RMSE per channel (matches baseline.rmse)
+            rmse = float(np.sqrt(np.mean((running - ref) ** 2)))
+            mr = float(running.sum(-1).mean() / max(ref.sum(-1).mean(), 1e-12))
+            rmses.append(rmse)
+            mean_ratios.append(mr)
+            print(f"   running RMSE = {rmse:.4e}   mean_ratio = {mr:.4f}")
+        save_render(cache_tag, running, meta={
+            "config": {"W": W, "H": H, "max_iter": args.max_iter, "c": args.c,
+                       "N": args.N, "progressive": progressive,
+                       "alpha": args.alpha, "geom_clamp": args.geom_clamp,
+                       "lookup": "voxel"},
+            "ref": os.path.basename(args.ref),
+            "rmses": rmses, "mrs": mean_ratios,
+        })
+        rmses, mean_ratios = np.array(rmses), np.array(mean_ratios)
 
-    iters = np.array(iters)
-    rmses = np.array(rmses)
-    mean_ratios = np.array(mean_ratios)
+    iters = np.arange(1, len(rmses) + 1)
 
     # log-log slope estimate
     slope, intercept = np.polyfit(np.log(iters), np.log(rmses), 1)
@@ -136,7 +155,7 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
     ax = axes[0]
-    ax.loglog(iters, rmses, "o-", label=f"BLT (slope={slope:.2f})")
+    ax.loglog(iters, rmses, "o-", label=f"segm (slope={slope:.2f})")
     # reference slopes anchored at iter=1
     ax.loglog(iters, rmses[0] * iters ** (-0.5), "k--", alpha=0.5, label="N^(-1/2) MC")
     ax.loglog(iters, rmses[0] * iters ** (-1/3), "k:",  alpha=0.5, label="N^(-1/3) progressive")
@@ -151,7 +170,7 @@ def main():
     ax.plot(iters, mean_ratios, "o-")
     ax.axhline(1.0, color="k", linestyle="--", alpha=0.5, label="ref")
     ax.set_xlabel("iterations")
-    ax.set_ylabel("mean(BLT) / mean(ref)")
+    ax.set_ylabel("mean(seg) / mean(ref)")
     ax.set_title("mean ratio — should asymptote at 1.0 if MMIS is unbiased")
     ax.set_ylim(0.0, 1.5)
     ax.grid(True, alpha=0.3)

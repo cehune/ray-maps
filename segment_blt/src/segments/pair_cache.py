@@ -91,8 +91,12 @@ def build_pair_cache(cluster, samplers) -> PairCache:
 
     for _, (start, end) in enumerate(cluster.cluster_ranges):
         flat_indices = cluster.sorted_indices[start:end]
-        if len(flat_indices) <= 5:
-            continue
+        # NOTE: no occupancy gate here. Skipping clusters with few endpoints
+        # zeroes out both propagation AND mmis pairs for those segments, which
+        # turns progressive radius shrinkage into coverage collapse (sparse
+        # cluster = biased dark instead of merely noisy) and builds a bias floor
+        # the iteration average can't remove. The len(y_segs)==0 / len(x_segs)==0
+        # guard below is the only degenerate case we actually need to drop.
         meta = cluster.endpoint_metadata[flat_indices]  # (K, 2): (seg_idx, which_end)
 
         y_segs = meta[meta[:, 1] == 1, 0]  # segment indices whose y is in this cluster
