@@ -9,7 +9,8 @@ from segments.mmis import MMIS
 
 class Propagation:
     def __init__(self, num_prop_iterations = 12, apply_kernel_correction: bool = False,
-                 geom_clamp_factor: float | None = None, geom_clamp_mode: str = "hard"):
+                 geom_clamp_factor: float | None = None, geom_clamp_mode: str = "hard",
+                 geom_clamp_growth: float = 0.0):
         self.num_prop_iterations = num_prop_iterations
         self._iteration = 1                  # current render iteration (1-indexed)
         # DIAGNOSTIC toggle: multiply each pair's contribution by 1/K(cluster_of(i.y))
@@ -23,6 +24,17 @@ class Propagation:
         if geom_clamp_mode not in ("hard", "soft"):
             raise ValueError(f"geom_clamp_mode must be 'hard' or 'soft', got {geom_clamp_mode!r}")
         self.geom_clamp_mode = geom_clamp_mode
+        # Progressive clamp relaxation. Effective cap at outer render iter n is
+        #   cap_n = factor · n**geom_clamp_growth · median(geom).
+        #   growth = 0 → constant cap (identical to the old fixed clamp; clean A/B).
+        #   growth > 0 → cap grows each iteration, so the clamp eventually stops
+        #     firing and its darkening bias vanishes in the running average. The
+        #     fixed clamp instead leaves a permanent ~3% floor (mean_ratio ≈ 0.97).
+        # _clamp_iter counts OUTER render iterations: +1 per iterate_propogation_vec
+        # call (not per inner propagation pass), reset only when a new Propagation
+        # is constructed (i.e. once per render config).
+        self.geom_clamp_growth = geom_clamp_growth
+        self._clamp_iter = 0
 
     def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
         out = mi.Color3f(0.0)
@@ -80,6 +92,7 @@ class Propagation:
 
         segs = cluster.segments
         S = len(segs)
+        self._clamp_iter += 1   # outer render-iteration counter (drives clamp growth)
 
         # Initial radiance_in = Le for all segments
         Le = np.array([[float(s.Le.x), float(s.Le.y), float(s.Le.z)] for s in segs],
@@ -103,7 +116,11 @@ class Propagation:
             if self.geom_clamp_factor is not None:
                 geom_nz = geom[geom > 0]
                 if len(geom_nz) > 0:
-                    geom_cap = float(self.geom_clamp_factor) * np.median(geom_nz)
+                    factor = float(self.geom_clamp_factor)
+                    if self.geom_clamp_growth:
+                        # cap grows as n**growth → clamp relaxes, bias → 0 in the limit
+                        factor *= self._clamp_iter ** float(self.geom_clamp_growth)
+                    geom_cap = factor * np.median(geom_nz)
                     if self.geom_clamp_mode == "soft":
                         # Reinhard: leaves values << cap untouched, asymptotes at cap.
                         denom = geom_cap + geom
