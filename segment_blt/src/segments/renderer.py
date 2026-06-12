@@ -16,14 +16,15 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3, geom_clamp_growth=0.0):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3, row_gain_cap=1.0, merge_min_len_factor=1.0):
     mmis        = MMIS()
     mmis.mmis_clamp_factor = mmis_clamp_factor
     propagation = Propagation(num_prop_iterations=num_prop_iterations,
                               apply_kernel_correction=apply_kernel_correction,
                               geom_clamp_factor=geom_clamp_factor,
                               geom_clamp_mode=geom_clamp_mode,
-                              geom_clamp_growth=geom_clamp_growth)
+                              row_gain_cap=row_gain_cap,
+                              merge_min_len_factor=merge_min_len_factor)
     cluster = Cluster(c=cluster_c, alpha=alpha)
     cluster.set_scene_aabb(scene.bbox())
     if add_light_samples:
@@ -33,15 +34,24 @@ def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weig
     return cluster, mmis, propagation, samplers
 
 
-def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_light_samples = True):
+def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_light_samples = True,
+                     add_nee_segments = True):
     """
     Sample one camera path per pixel.
     Returns (segment_pool, camera_first_segments).
     camera_first_segments[pixel_idx] is segments[0] for that pixel, or None.
+
+    add_nee_segments: emit one next-event-estimation segment per path vertex
+    (vertex → sampled emitter point, visibility-tested). These flood every
+    voxel with light-terminal Le sources so the cached-direct gather D(v)
+    stops being density estimation of rare BSDF emitter hits — the main
+    grain mechanism vs an NEE path tracer. MIS against BSDF light hits is
+    automatic via the nee_parea term in conditional_pdf.
     """
     segment_pool = SegmentPoolV2()
     camera_first_segments = []
     n_pixels = height * width
+    n_nee = 0
 
     for y in range(height):
         for x in range(width):
@@ -56,9 +66,18 @@ def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_lig
                 sample3=ap_sample,
             )
             si = scene.ray_intersect(ray)
-            segments = sample_camera_path(scene, sampler, ray, ray_weight, si)
+            nee_segs = [] if add_nee_segments else None
+            segments = sample_camera_path(scene, sampler, ray, ray_weight, si,
+                                          nee_out=nee_segs)
+            if nee_segs:
+                segment_pool.add_path(nee_segs)
+                n_nee += len(nee_segs)
 
             if segments:
+                # stash the whole path on the first segment for the depth-d
+                # split final gather (_next_seg kept for back-compat)
+                segments[0]._next_seg = segments[1] if len(segments) > 1 else None
+                segments[0]._path = segments
                 camera_first_segments.append(segments[0])
                 segment_pool.add_path(segments)
             else:
@@ -77,18 +96,90 @@ def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_lig
         print(f"  sampled {len(camera_first_segments)} camera paths, "
             f"{light_paths_added}/{n_light_paths} light paths "
             f"(β={beta})")
+    if n_nee:
+        print(f"  [nee] {n_nee} NEE segments added "
+              f"({n_nee/max(len(segment_pool.paths),1)*100:.0f}% of pool)")
 
     return segment_pool, camera_first_segments
 
-def _final_gather(camera_first_segments, height, width):
+def _readout_path(path, depth):
     """
-    Collect radiance_in * throughput * mmis_weight per pixel after propagation.
+    Depth-d split readout along the pixel's own camera path (radiance INTO
+    v_1 along s_1, excluding T0):
+
+        R_k = D(s_k) + T_{k+1} · R_{k+1}      for k < d   (split levels)
+        R_d = rad_in(s_d)                                 (cache level)
+
+    with the light-terminal drop at every split level: if s_{k+1} terminates
+    on the emitter, R_k = D(s_k) — the path's own emitter hit is already
+    inside D(s_k) with its MMIS weight, so a raw Le never multiplies a single
+    path weight (no salt-and-pepper).
+
+    depth=1  → pure cache read at the first hit (splotchy: shared estimate).
+    depth=2  → previous behavior: cached direct at v1 + own bounce to the
+               indirect cache at v2.
+    depth=d  → bounces 1..d-1 use smooth cached-direct plus the path's own
+               unbiased transport (no kernel, no multi-hop compounding);
+               the multi-hop cache only enters at bounce d, whose energy
+               share decays with d. Large d ≈ path tracing with cached
+               direct lighting — the zero-cache-indirect diagnostic arm.
+
+    If the path dies before depth d (max_depth cutoff), the tail reads the
+    full cache at the last segment. T_{k+1} carries the bounce's own 1/p_ω,
+    so no mmis weight applies at split levels.
+    """
+    last = min(depth, len(path)) - 1   # index of the cache-read segment
+    has_direct = getattr(path[0], "direct_in", None) is not None
+
+    if not has_direct:
+        # non-vec runs have no direct split — plain product readout down to
+        # the cache level (old depth-2 non-vec fallback, generalized)
+        R = path[last].radiance_in
+        for k in range(last, 0, -1):
+            R = path[k].throughput * R
+        return R
+
+    seg_last = path[last]
+    # DEEP truncated tail (path ran into max_depth without reaching the
+    # light, before the designed cache level). Reading the FULL cache here
+    # is poison: depth-16 vertices are survivorship-concentrated in concave
+    # corners, exactly where the multi-hop cache's compounding eigenmode is
+    # hottest — O3 measured this bucket at 5.5-6.0x its truth slice (~+4%
+    # of the whole image at fg_depth=99). Reading only the cached direct
+    # drops true transport beyond len(path)+1 bounces (~0.1% in cornell).
+    # SHALLOW deaths (BSDF pdf=0 / escape at small depth) must keep the
+    # full-cache fallback — there the dropped indirect is real energy and
+    # the vertex distribution is not corner-biased (gate: TAIL_DIRECT_MIN).
+    TAIL_DIRECT_MIN = 6
+    if (last < depth - 1 and last >= TAIL_DIRECT_MIN
+            and not (seg_last.y.is_light or seg_last.x.is_light)):
+        R = seg_last.direct_in
+    else:
+        R = seg_last.radiance_in        # designed cache level / shallow fallback
+    for k in range(last - 1, -1, -1):
+        nxt = path[k + 1]
+        if nxt.y.is_light or nxt.x.is_light:
+            R = path[k].direct_in       # emitter hit counted inside D
+        else:
+            R = path[k].direct_in + nxt.throughput * R
+    return R
+
+
+def _final_gather(camera_first_segments, height, width, depth=2):
+    """
+    Collect per-pixel radiance after propagation: pixel = T0 · R_1 with the
+    depth-d split readout (see _readout_path). depth=2 reproduces the old
+    split gather exactly; depth=1 the old cache readout.
     """
     accum = np.zeros((height * width, 3))
     for pixel_idx, first_seg in enumerate(camera_first_segments):
         if first_seg is None:
             continue
-        val = first_seg.throughput * first_seg.radiance_in * first_seg.mmis_weight
+        path = getattr(first_seg, "_path", None)
+        if depth <= 1 or path is None:
+            val = first_seg.throughput * first_seg.radiance_in * first_seg.mmis_weight
+        else:
+            val = first_seg.throughput * _readout_path(path, depth)
         accum[pixel_idx] = [float(val.x), float(val.y), float(val.z)]
     return accum.reshape(height, width, 3)
 
@@ -229,11 +320,13 @@ class Renderer:
 
     def _render_iterate_vec(self, scene, sensor, sampler, height, width,
                             cluster, mmis, propagation, samplers, iteration=0,
-                            verbose=False, beta = 0.25, add_light_samples = True):
+                            verbose=False, beta = 0.25, add_light_samples = True,
+                            final_gather_depth=2, add_nee_segments=True):
         
         t0 = time.time()
         segment_pool, camera_first_segments = _sample_segments(
-            scene, sensor, sampler, height, width, beta, add_light_samples
+            scene, sensor, sampler, height, width, beta, add_light_samples,
+            add_nee_segments=add_nee_segments
         )
         print(f"sampling: {time.time()-t0:.1f}s")
 
@@ -245,7 +338,10 @@ class Renderer:
         print(f"cluster: {time.time()-t0:.1f}s")       
         t0 = time.time()
         # Build pair cache once — BSDF + PDF computed here, reused in propagation
-        pair_cache = build_pair_cache(cluster, samplers)
+        pair_cache = build_pair_cache(
+            cluster, samplers,
+            merge_min_len_factor=propagation.merge_min_len_factor,
+        )
         print(f"pair: {time.time()-t0:.1f}s")
 
         # MMIS weights (vec)
@@ -268,7 +364,8 @@ class Renderer:
             _diag("vec", cluster, pair_cache, camera_first_segments)
 
         t0 = time.time()
-        bin = _final_gather(camera_first_segments, height, width)
+        bin = _final_gather(camera_first_segments, height, width,
+                            depth=final_gather_depth)
 
         trace_firefly(bin, camera_first_segments, height, width, 5)
         print(f"sampling: {time.time()-t0:.1f}s")
@@ -278,8 +375,10 @@ class Renderer:
                    kernel_radius=16, kernel_weight=0.67,
                    num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True,
                    cluster_c=30, apply_kernel_correction=False, progressive=True,
-                   geom_clamp_factor=200.0, mmis_clamp_factor=None,
-                   geom_clamp_mode="hard", alpha=0.2, geom_clamp_growth=0.0):
+                   geom_clamp_factor=None, mmis_clamp_factor=None,
+                   geom_clamp_mode="hard", alpha=0.2, row_gain_cap=1.0,
+                   merge_min_len_factor=1.0, final_gather_depth=2,
+                   add_nee_segments=True):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
 
@@ -301,8 +400,8 @@ class Renderer:
             scene, add_light_samples, kernel_radius, kernel_weight, num_prop_iterations,
             cluster_c=cluster_c, apply_kernel_correction=apply_kernel_correction,
             geom_clamp_factor=geom_clamp_factor, mmis_clamp_factor=mmis_clamp_factor,
-            geom_clamp_mode=geom_clamp_mode, alpha=alpha,
-            geom_clamp_growth=geom_clamp_growth,
+            geom_clamp_mode=geom_clamp_mode, alpha=alpha, row_gain_cap=row_gain_cap,
+            merge_min_len_factor=merge_min_len_factor,
         )
 
         for i in range(n_iterations):
@@ -318,7 +417,8 @@ class Renderer:
             accum += self._render_iterate_vec(
                 scene, sensor, sampler, height, width,
                 cluster, mmis, propagation, samplers,
-                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples
+                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples,
+                final_gather_depth=final_gather_depth, add_nee_segments=add_nee_segments
             )
 
         return accum / n_iterations
@@ -420,24 +520,24 @@ def diagnose_cluster_factors(cluster, samplers, pair_cache, *, label=""):
     n_cam        = int(is_cam_first.sum())
     n_zero_cam   = int(((incoming == 0) & is_cam_first).sum())
 
-    print(f"\n── cluster diagnostics [{label}] ─────────────────────────────")
-    print(f"  segments: {S}    prop pairs: {P}    avg pairs/seg: {P/S:.1f}")
-    print(f"  zero-incoming:    {n_zero}/{S} ({100*n_zero/max(S,1):.1f}%)  "
-          f"med={int(np.median(incoming))}  max={int(incoming.max())}")
-    print(f"  camera-first 0:   {n_zero_cam}/{n_cam} ({100*n_zero_cam/max(n_cam,1):.1f}%)"
-          f"   ← pixels with NO indirect contribution")
-    stats("mmis_w",       mmis_w,      "1 (or π for diffuse interiors)")
-    stats("geom",         geom,        "1 — drops with distance²")
-    stats("Le",           Le,          "0 except light-terminators")
-    stats("radiance_in",  rad_in,      "1 if at light, lower elsewhere")
-    if P > 0:
-        stats("f_r (BSDF)",    fr,          "1/π ≈ 0.318 for Lambertian")
-        stats("weighted_fr",   weighted_fr, "1 if energy-conserving")
-        stats("contrib/pair",  contrib,     "1 if Le=1 reachable")
-        gain = (P / S) * weighted_fr.mean()
-        print(f"  estimated gain/hop = (pairs/seg) · mean(weighted_fr) = {gain:.4f}")
-        print(f"     ▸ gain ≈ 1.0 means energy-conserving; gain < 0.5 means lossy")
-    print("──────────────────────────────────────────────────────────")
+    # print(f"\n── cluster diagnostics [{label}] ─────────────────────────────")
+    # print(f"  segments: {S}    prop pairs: {P}    avg pairs/seg: {P/S:.1f}")
+    # print(f"  zero-incoming:    {n_zero}/{S} ({100*n_zero/max(S,1):.1f}%)  "
+    #       f"med={int(np.median(incoming))}  max={int(incoming.max())}")
+    # print(f"  camera-first 0:   {n_zero_cam}/{n_cam} ({100*n_zero_cam/max(n_cam,1):.1f}%)"
+    #       f"   ← pixels with NO indirect contribution")
+    # stats("mmis_w",       mmis_w,      "1 (or π for diffuse interiors)")
+    # stats("geom",         geom,        "1 — drops with distance²")
+    # stats("Le",           Le,          "0 except light-terminators")
+    # stats("radiance_in",  rad_in,      "1 if at light, lower elsewhere")
+    # if P > 0:
+    #     stats("f_r (BSDF)",    fr,          "1/π ≈ 0.318 for Lambertian")
+    #     stats("weighted_fr",   weighted_fr, "1 if energy-conserving")
+    #     stats("contrib/pair",  contrib,     "1 if Le=1 reachable")
+    #     gain = (P / S) * weighted_fr.mean()
+    #     print(f"  estimated gain/hop = (pairs/seg) · mean(weighted_fr) = {gain:.4f}")
+    #     print(f"     ▸ gain ≈ 1.0 means energy-conserving; gain < 0.5 means lossy")
+    # print("──────────────────────────────────────────────────────────")
 
 
 def diagnose_voxel_cluster(cluster, pair_cache, voxel_idx, *, label=""):
