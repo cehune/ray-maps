@@ -1,6 +1,6 @@
 import mitsuba as mi
 import drjit as dr
-from segments.primitives import Segment, SegmentTechnique
+from segments.primitives import Segment, SegmentTechnique, MIN_SEG_LEN
 from abc import ABC, abstractmethod
 
 
@@ -39,6 +39,14 @@ class SequentialSampler(Sampler):
         if auxiliary.y.is_camera or auxiliary.y.is_light:
             return 0.0
 
+        # NEE technique mass: any auxiliary in the cluster could have sampled
+        # segment.y by next-event estimation, with a ref-independent
+        # area-measure pdf (stored at segment creation; nonzero only for
+        # light-terminal segments). Adding it per-auxiliary makes the MMIS
+        # denominator the balance heuristic between BSDF-found light hits
+        # and NEE segments — MIS for free.
+        p_nee = getattr(segment, "nee_parea", 0.0)
+
         # Distance from auxiliary.y to segment.y — this is the connection vector
         # used in the area-measure conversion.  For adjacent segments in the
         # sequential model auxiliary.y == segment.x so this equals segment.len,
@@ -46,40 +54,49 @@ class SequentialSampler(Sampler):
         # the same cluster.
         delta  = segment.y.p - auxiliary.y.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
-            return 0.0
+        # GUARD SYMMETRY: must match the Segment admission threshold exactly.
+        # For the true parent, this distance IS segment.len, and Segment
+        # guarantees len >= MIN_SEG_LEN — so this guard can never delete a
+        # parent term for a segment that exists. (The old 1e-10 threshold
+        # zeroed parents of segments with len in [1e-8, 1e-5] while their
+        # G ~ 1/len^2 survived in the numerator: unbounded contribution.)
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
+            return p_nee
 
         # cant store outgoing direction local to the segment because we assume it
         # happens at the auxiliary endpoint, using auxiliary.y.n, check with Wenyou
         wo_world = dr.normalize(delta)   # unit connection vector from auxiliary.y → segment.y
         wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
 
-        # pw (s'|yi, si) bsdf sampling pdf to next direction (just along si+1)
-        # this is along x to y
-        # set wi correctly on a copy of auxiliary.y.si
+        # auxiliary.y.si is shared across MMIS calls — save/restore si.wi so we
+        # don't leave a stale wi behind for the next caller. Cheap, no allocation.
         si = auxiliary.y.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-
-        pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
         try:
-            pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return p_nee
 
-        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
+            pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
+            try:
+                pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
 
         # cos at segment.y (incoming side) — the area measure conversion
         cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
 
-        if cos_at_aux_y < 1e-6:
-            return 0.0
+        # NOTE: no grazing-cosine guard here. The return value never divides
+        # by cos at the auxiliary — pw itself goes to zero smoothly at grazing
+        # (cos/pi for diffuse). The old `cos_at_aux_y < 1e-6 -> return 0`
+        # deleted pdf mass for no numerical reason, breaking the w*G
+        # cancellation (numerator kept f*G > 0 for the same configuration).
 
         # eval_pdf returns solid-angle PDF directly (e.g. cos/π for diffuse) — no conversion needed
-        return pw * cos_at_seg_y / len_sq
+        return pw * cos_at_seg_y / len_sq + p_nee
 
 
     """
@@ -105,19 +122,23 @@ class SequentialSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
-    
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
+
 
 class LightSampler(Sampler):
     technique_type = SegmentTechnique.LIGHT
@@ -137,7 +158,8 @@ class LightSampler(Sampler):
             # couldn't have sampled it
         delta = segment.x.p - auxiliary.x.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
+        # GUARD SYMMETRY: same constant as Segment admission (see SequentialSampler)
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
             return 0.0
 
         wo_world = dr.normalize(delta)
@@ -147,26 +169,26 @@ class LightSampler(Sampler):
         # light path travels x→y, so incoming at x is -seg.dir
 
         si = auxiliary.x.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.x.n).to_local(auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-        
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-
-        pw_result = bsdf.eval_pdf(ctx, si, wo_local)
         try:
-            pw = float(pw_result[1])
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return 0.0
 
-        cos_at_aux_x = float(dr.abs(dr.dot(auxiliary.x.n, wo_world)))
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+
+            pw_result = bsdf.eval_pdf(ctx, si, wo_local)
+            try:
+                pw = float(pw_result[1])
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
+
         cos_at_seg_x = float(dr.abs(dr.dot(segment.x.n, wo_world)))
 
-        if cos_at_aux_x < 1e-6:
-            return 0.0
-
+        # no grazing-cosine guard — pw handles grazing smoothly (see SequentialSampler)
         return pw * cos_at_seg_x / len_sq
 
     @staticmethod
@@ -180,17 +202,21 @@ class LightSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-        return bsdf.eval(ctx, si, wo_local) / cos_o
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+            return bsdf.eval(ctx, si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
 

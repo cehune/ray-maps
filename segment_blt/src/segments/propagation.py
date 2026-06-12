@@ -8,12 +8,76 @@ import math
 from segments.mmis import MMIS
 
 class Propagation:
-    def __init__(self, num_prop_iterations = 12):
+    def __init__(self, num_prop_iterations = 12, apply_kernel_correction: bool = False,
+                 geom_clamp_factor: float | None = None, geom_clamp_mode: str = "hard",
+                 row_gain_cap: float | None = 1.0,
+                 merge_min_len_factor: float | None = 1.0):
         self.num_prop_iterations = num_prop_iterations
         self._iteration = 1                  # current render iteration (1-indexed)
+        # DIAGNOSTIC toggle: multiply each pair's contribution by 1/K(cluster_of(i.y))
+        self.apply_kernel_correction = apply_kernel_correction
+        # Energy-conservation projection. The per-receiver row sum of the
+        # propagation operator, Σ_j lum(w_j · f_j · G_j), estimates that
+        # cluster's directional-hemispherical reflectance — physically ≤ albedo.
+        # Rows exceeding the cap are scaled down to it. Unlike the median-relative
+        # geom clamp this is asymptotically inactive (rows sit below albedo as the
+        # estimator converges) and it bounds the operator's spectral radius below 1,
+        # which makes propagation divergence (corner fireflies) impossible.
+        # Set to max scene albedo (or 1.0); None disables.
+        self.row_gain_cap = row_gain_cap
+        # Sub-kernel exclusion for the NON-VEC path (the vec path gets this
+        # from build_pair_cache): segments with len < factor * voxel_size are
+        # skipped as merge sources. See build_pair_cache docstring.
+        self.merge_min_len_factor = merge_min_len_factor
+        # Firefly suppression on geom_term. Two knobs:
+        #   geom_clamp_factor: cap = factor × median(geom). None disables entirely.
+        #   geom_clamp_mode: 'hard' → np.minimum(geom, cap)  (brick wall, max bias)
+        #                    'soft' → geom * cap / (cap + geom)  (Reinhard-style)
+        # Soft loses less energy from the legitimate tail at the same `factor`.
+        self.geom_clamp_factor = geom_clamp_factor
+        if geom_clamp_mode not in ("hard", "soft"):
+            raise ValueError(f"geom_clamp_mode must be 'hard' or 'soft', got {geom_clamp_mode!r}")
+        self.geom_clamp_mode = geom_clamp_mode
 
-    def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster, samplers: dict[SegmentTechnique, 'Sampler']):
+    @staticmethod
+    def _lum(c) -> float:
+        return 0.2126 * float(c.x) + 0.7152 * float(c.y) + 0.0722 * float(c.z)
+
+    def _classical_links(self, cluster: Cluster) -> dict:
+        """parent_idx -> list[(child_idx, throughput)] for sub-kernel CAMERA
+        segments (mirror of the cls_* arrays in build_pair_cache)."""
+        links: dict[int, list] = {}
+        if self.merge_min_len_factor is None or float(cluster.voxel_size) <= 0:
+            return links
+        min_len = float(self.merge_min_len_factor) * float(cluster.voxel_size)
+        y_owner = {id(s.y): i for i, s in enumerate(cluster.segments)}
+        for j, sj in enumerate(cluster.segments):
+            if float(sj.len) >= min_len:
+                continue
+            if sj.technique != SegmentTechnique.CAMERA or sj.x.is_camera:
+                continue
+            if getattr(sj, "is_nee", False):   # see build_pair_cache
+                continue
+            p = y_owner.get(id(sj.x))
+            if p is None or p == j:
+                continue
+            links.setdefault(p, []).append((j, sj.throughput))
+        return links
+
+    def propagate_segment(self, segment: Segment, seg_idx: int, cluster: Cluster,
+                          samplers: dict[SegmentTechnique, 'Sampler'],
+                          cap_budget: float | None = None):
+        # light-terminal receivers are pinned to Le by the swap — gathering
+        # into them is wasted (and NEE segments' synthetic y has no bsdf)
+        if segment.y.is_light:
+            return mi.Color3f(0.0)
         out = mi.Color3f(0.0)
+        row_gain = 0.0  # luminance of Σ_j w_j·f_j·G_j — the operator row sum
+        cap = self.row_gain_cap if cap_budget is None else cap_budget
+
+        min_len = 0.0
+        if self.merge_min_len_factor is not None and float(cluster.voxel_size) > 0:
+            min_len = float(self.merge_min_len_factor) * float(cluster.voxel_size)
 
         y_cluster_idx = cluster.endpoint_to_cluster[seg_idx * 2 + 1]
         start, end = cluster.cluster_ranges[y_cluster_idx]
@@ -23,22 +87,39 @@ class Propagation:
                 continue
             if which_end == 0:  # y-endpoint of seg is near the x of the next
                 next_seg: Segment = cluster.segments[next_idx]
-                if next_seg.mmis_weight == 0.0:  
+                if next_seg.mmis_weight == 0.0:
                     continue
-                
+                if float(next_seg.len) < min_len:  # sub-kernel: not a merge source
+                    continue
+
                 sampler = samplers.get(next_seg.technique)
                 if sampler is None:
                     continue
-    
+
                 f = sampler.shift_invariant_bsdf(segment, next_seg)
-                contrib = next_seg.mmis_weight * f * next_seg.geom_term * next_seg.radiance_in
-                out += contrib
+                wfg = next_seg.mmis_weight * f * next_seg.geom_term
+                row_gain += (0.2126 * float(wfg.x) + 0.7152 * float(wfg.y)
+                             + 0.0722 * float(wfg.z))
+                out += wfg * next_seg.radiance_in
+
+        # Energy-conservation projection — mirror of the vectorized version.
+        # The row sum estimates this cluster's reflectance and cannot
+        # physically exceed albedo; scale over-unity rows down uniformly.
+        # (cap may be a reduced budget when classical links consume part of it.)
+        if cap is not None and row_gain > cap:
+            out = out * (float(cap) / row_gain) if cap > 0 else mi.Color3f(0.0)
         return out
-        
+
     def propagate_all_segments(self, cluster: Cluster, samplers):
         # should be called once per iteration
-        for seg_idx, segment in enumerate(cluster.segments):                
-            segment.radiance_out = self.propagate_segment(segment, seg_idx, cluster, samplers)
+        links = self._classical_links(cluster)
+        for seg_idx, segment in enumerate(cluster.segments):
+            # cap applies to the merged gather only; classical links are
+            # unbiased one-sample MC and never scaled (see vec version).
+            out = self.propagate_segment(segment, seg_idx, cluster, samplers)
+            for cj, tw in links.get(seg_idx, ()):
+                out = out + tw * cluster.segments[cj].radiance_in
+            segment.radiance_out = out
         
     def swap_segment_radiance(self, cluster: Cluster):
         for segment in cluster.segments:
@@ -85,9 +166,75 @@ class Propagation:
             mmis_w = np.array([float(s.mmis_weight) for s in segs], dtype=np.float64)
             geom   = np.array([float(s.geom_term)   for s in segs], dtype=np.float64)
 
+            # Firefly suppression on geom_term (1/len² explodes for short segments).
+            # Median-relative so the cap scales with scene units. Bias/variance tradeoff
+            # is controlled by self.geom_clamp_factor and self.geom_clamp_mode.
+            if self.geom_clamp_factor is not None:
+                geom_nz = geom[geom > 0]
+                if len(geom_nz) > 0:
+                    geom_cap = float(self.geom_clamp_factor) * np.median(geom_nz)
+                    if self.geom_clamp_mode == "soft":
+                        # Reinhard: leaves values << cap untouched, asymptotes at cap.
+                        denom = geom_cap + geom
+                        geom = np.where(denom > 0, geom * geom_cap / denom, geom)
+                    else:
+                        geom = np.minimum(geom, geom_cap)
+
             # Pre-multiply BSDF with static mmis_weight and geom_term for each pair:
             # weighted_fr[k] = prop_fr[k] * mmis_w[j[k]] * geom[j[k]]   shape (P, 3)
             weighted_fr = pair_cache.prop_fr * (mmis_w[j] * geom[j])[:, np.newaxis]
+
+            # OPTIONAL: 1/K kernel-area correction. K = tilt / voxel_size² (a density).
+            # 1/K = voxel_size² / tilt has units of area. We multiply the per-pair
+            # weight by 1/K for the cluster that owns the receiver's y endpoint
+            # (which is where the local integration happens).
+            if self.apply_kernel_correction and hasattr(cluster, "cluster_kernel_values"):
+                if not hasattr(cluster, "endpoint_to_cluster"):
+                    cluster.build_reverse_map()
+                if len(cluster.cluster_kernel_values) == 0:
+                    cluster.compute_cluster_kernel_values()
+                K = cluster.cluster_kernel_values  # (C,)
+                # cluster index of receiver i's y endpoint
+                recv_cluster = cluster.endpoint_to_cluster[pair_cache.prop_i * 2 + 1]
+                inv_K = np.where(K[recv_cluster] > 0, 1.0 / K[recv_cluster], 0.0)
+                weighted_fr = weighted_fr * inv_K[:, np.newaxis]
+                print(f"  [kernel-correction ON] median 1/K = {np.median(inv_K):.3e}, "
+                      f"max 1/K = {inv_K.max():.3e}")
+
+            # Energy-conservation projection (see __init__). Row i of the
+            # propagation operator has luminance gain Σ_{pairs k: prop_i[k]=i}
+            # lum(weighted_fr[k]); a physical reflectance cannot exceed albedo,
+            # so rows above row_gain_cap are scaled down uniformly. This bounds
+            # the spectral radius of the operator at the cap, so the fixed-point
+            # iteration below cannot diverge (the corner-firefly mechanism).
+            # Classical links are NOT part of this projection. Their realized
+            # gain (≈ albedo when the child is short) is a legitimate
+            # one-sample MC fluctuation — it averages to the small near-field
+            # share across realizations. Subtracting it from the row budget
+            # (an earlier version did) systematically shaved ~1%/iteration of
+            # legitimate long-range energy from every parent of a short child.
+            # The cap applies to the MERGED operator only, which is the part
+            # whose row sum estimates a reflectance and can nonphysically
+            # exceed it. Classical edges are acyclic (path-parent links), so
+            # they cannot form feedback loops regardless.
+            if self.row_gain_cap is not None:
+                cap = float(self.row_gain_cap)
+                LUM = np.array([0.2126, 0.7152, 0.0722])
+                lum = weighted_fr @ LUM
+                row_gain = np.zeros(S, dtype=np.float64)
+                np.add.at(row_gain, pair_cache.prop_i, lum)
+                over = row_gain > cap
+                n_capped = int(over.sum())
+                if n_capped > 0:
+                    scale = np.where(over, cap / np.maximum(row_gain, 1e-300), 1.0)
+                    weighted_fr = weighted_fr * scale[pair_cache.prop_i][:, np.newaxis]
+                    total = float(row_gain.sum())
+                    lost = float(np.maximum(row_gain - cap, 0.0).sum())
+                    print(f"  [row-gain cap {cap:g}] capped {n_capped}/{S} rows "
+                          f"({100*n_capped/S:.1f}%), max pre-cap gain={row_gain.max():.2f}, "
+                          f"gain removed={100*lost/max(total,1e-300):.2f}%")
+
+        has_cls = len(pair_cache.cls_i) > 0
 
         for _ in range(self.num_prop_iterations):
             rad_out = np.zeros((S, 3), dtype=np.float64)
@@ -97,15 +244,44 @@ class Propagation:
                 contrib = weighted_fr * rad_in[pair_cache.prop_j]
                 np.add.at(rad_out, pair_cache.prop_i, contrib)
 
+            if has_cls:
+                # classical near-field links: parent ← throughput(child) · L(child)
+                np.add.at(rad_out, pair_cache.cls_i,
+                          pair_cache.cls_w * rad_in[pair_cache.cls_j])
+
             # Swap: light endpoints pin to Le; others advance to rad_out
             rad_in = np.where(is_light[:, np.newaxis], Le, rad_out)
 
-        # Write final radiance_in back to segment objects
+        # ── direct-only gather for the split final readout ────────────────────
+        # D(i) = Σ over pairs whose SOURCE is light-terminal of w·f·G·Le
+        # (plus light-terminal classical links). The light-terminal segments
+        # act as shared NEE samples: many light hits, merged with MMIS
+        # weights — a smooth direct-light estimate. The depth-2 final gather
+        # then carries ONLY indirect through the path's own bounce, so a
+        # single lucky emitter hit never multiplies a raw 1/p path weight.
+        direct = np.zeros((S, 3), dtype=np.float64)
+        if has_pairs:
+            lt = is_light[pair_cache.prop_j]
+            if lt.any():
+                np.add.at(direct, pair_cache.prop_i[lt],
+                          weighted_fr[lt] * Le[pair_cache.prop_j[lt]])
+        if has_cls:
+            lt = is_light[pair_cache.cls_j]
+            if lt.any():
+                np.add.at(direct, pair_cache.cls_i[lt],
+                          pair_cache.cls_w[lt] * Le[pair_cache.cls_j[lt]])
+
+        # Write final radiance_in (and the direct split) back to segments
         for seg_idx, seg in enumerate(segs):
             seg.radiance_in = mi.Color3f(
                 float(rad_in[seg_idx, 0]),
                 float(rad_in[seg_idx, 1]),
                 float(rad_in[seg_idx, 2]),
+            )
+            seg.direct_in = mi.Color3f(
+                float(direct[seg_idx, 0]),
+                float(direct[seg_idx, 1]),
+                float(direct[seg_idx, 2]),
             )
         # how much radiance is contributed per hop
         # print(f"expected gain per hop (pairs * weighted_fr): {(len(pair_cache.prop_i) / len(segs)) * weighted_fr.mean():.4f}")
