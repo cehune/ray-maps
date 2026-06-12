@@ -20,7 +20,6 @@ Usage:
     python J_alpha_sweep.py --max-iter 32 --width 100   # smaller for speed
 """
 from _setup import cornell_scene
-from _cache import save_render, load_render
 
 import argparse
 import os
@@ -47,13 +46,12 @@ def reinhard_tonemap(img, exposure, gamma=2.2):
 
 
 def run_one(scene, sensor, renderer, H, W, max_iter, c, N, alpha, ref,
-            geom_clamp=200.0, geom_mode="hard", geom_growth=0.0):
+            geom_clamp=200.0, geom_mode="hard"):
     """Run BLT for one alpha value, return per-iter (rmse, mean_ratio, voxel_size)."""
     cluster, mmis, propagation, samplers = _make_blt_components(
         scene, add_light_samples=False,
         num_prop_iterations=N, cluster_c=c, alpha=alpha,
         geom_clamp_factor=geom_clamp, geom_clamp_mode=geom_mode,
-        geom_clamp_growth=geom_growth,
     )
     accum = np.zeros((H, W, 3), dtype=np.float64)
     rmses, mrs, voxel_sizes = [], [], []
@@ -86,13 +84,6 @@ def main():
     ap.add_argument("--alphas", nargs="+", type=float, default=[0.2, 0.4, 0.67],
                     help="Knaus-Zwicker α values to sweep. Smaller = slower shrinkage.")
     ap.add_argument("--geom-clamp", type=float, default=200.0)
-    ap.add_argument("--geom-clamp-growth", type=float, default=0.0,
-                    help="progressive clamp relaxation: cap_n = geom_clamp · n**growth "
-                         "· median(geom). 0 = fixed clamp (old behavior). Try 0.5–1.0 to "
-                         "let the cap grow each iter so the clamp's ~3%% darkening floor "
-                         "vanishes in the running average.")
-    ap.add_argument("--refresh", action="store_true",
-                    help="ignore cached EXR/metrics and re-render every alpha")
     args = ap.parse_args()
 
     W = H = args.width
@@ -107,37 +98,11 @@ def main():
     results = {}
     for alpha in args.alphas:
         print(f"\n── α = {alpha} ──")
-        # Cache key encodes everything that changes the IMAGE (not the ref).
-        # growth suffix only appended when nonzero, so existing g0 caches stay valid.
-        tag = (f"J_w{W}_i{args.max_iter}_c{args.c}_N{args.N}"
-               f"_a{alpha}_g{args.geom_clamp}"
-               + (f"_gg{args.geom_clamp_growth}" if args.geom_clamp_growth else ""))
-        hit = None if args.refresh else load_render(tag)
-        if hit is not None and hit["meta"] is not None:
-            m = hit["meta"]
-            rmses, mrs, vs, img = m["rmses"], m["mrs"], m["voxel_sizes"], hit["image"]
-            print(f"   (cache hit: {tag})")
-            cached_ref = m.get("ref")
-            if cached_ref != os.path.basename(args.ref):
-                print(f"   ⚠ cached metrics computed vs '{cached_ref}', "
-                      f"current ref is '{os.path.basename(args.ref)}' — "
-                      f"pass --refresh to recompute against it")
-        else:
-            rmses, mrs, vs, img = run_one(
-                scene, sensor, renderer, H, W,
-                args.max_iter, args.c, args.N, alpha, ref,
-                geom_clamp=args.geom_clamp, geom_growth=args.geom_clamp_growth,
-            )
-            save_render(tag, img, meta={
-                "config": {"W": W, "H": H, "max_iter": args.max_iter,
-                           "c": args.c, "N": args.N, "alpha": alpha,
-                           "geom_clamp": args.geom_clamp,
-                           "geom_clamp_growth": args.geom_clamp_growth,
-                           "beta": 0.1, "lookup": "voxel"},
-                "ref": os.path.basename(args.ref),
-                "rmses": rmses, "mrs": mrs, "voxel_sizes": vs,
-            })
-            print(f"   (saved cache: {tag}.exr / .json)")
+        rmses, mrs, vs, img = run_one(
+            scene, sensor, renderer, H, W,
+            args.max_iter, args.c, args.N, alpha, ref,
+            geom_clamp=args.geom_clamp,
+        )
         results[alpha] = (rmses, mrs, vs, img)
         print(f"   iter1  voxel={vs[0]:.3e}   mr={mrs[0]:.4f}   RMSE={rmses[0]:.4e}")
         print(f"   final  voxel={vs[-1]:.3e}   mr={mrs[-1]:.4f}   RMSE={rmses[-1]:.4e}")
@@ -157,49 +122,15 @@ def main():
     if n_alpha == 1:
         axes = axes.reshape(2, -1)
 
-    # ── row 0, left: convergence with bias/variance decomposition ────
-    # A running average converges as  RMSE(N)² = bias² + variance/N.
-    #   • variance/N  → falls as 1/N  (slope -1/2 on log-log)
-    #   • bias²       → CONSTANT      (horizontal asymptote)
-    # so RMSE flattens onto a floor = |bias|; it does NOT reach zero. A single
-    # power-law fit over the whole curve is meaningless here — it blends the
-    # early variance-limited slope with the late bias-limited flat. Instead we
-    # fit RMSE² = a + b/N (linear in 1/N): a = floor², b = variance scale, and
-    # overlay the fitted model (dashed) + the floor (dotted) so you can read
-    # off what it converges TO and whether variance is still falling.
+    # row 0: convergence curves (one big plot, all alphas)
     ax = axes[0, 0]
-    print("\n── convergence fit (RMSE² = floor² + var/N) ─────────")
-    for alpha, (rmses_a, _mrs, _vs, _) in results.items():
-        r = np.asarray(rmses_a, dtype=np.float64)
-        line, = ax.loglog(iters, r, "o-", label=f"α={alpha}")
-        col = line.get_color()
-
-        b, a = np.polyfit(1.0 / iters, r ** 2, 1)          # RMSE² vs 1/N
-        floor = float(np.sqrt(max(a, 0.0)))
-        model = np.sqrt(np.maximum(a + b / iters, 0.0))
-        ax.loglog(iters, model, "--", color=col, alpha=0.6)
-        if floor > 0:
-            ax.axhline(floor, color=col, ls=":", alpha=0.5)
-
-        # asymptotic slope = fit only the back half (drops the early transient)
-        h = max(len(iters) // 2, 2)
-        tail_slope = np.polyfit(np.log(iters[-h:]), np.log(r[-h:]), 1)[0]
-        full_slope = np.polyfit(np.log(iters), np.log(r), 1)[0]
-        # extrapolated RMSE if variance vanished entirely (N→∞)
-        print(f"  α={alpha:<5}: final={r[-1]:.4f}  floor≈{floor:.4f}  "
-              f"({100*floor/max(r[-1],1e-9):.0f}% of final is irreducible)  "
-              f"tail-slope={tail_slope:+.2f}  full-slope={full_slope:+.2f}")
-
-    r0 = float(np.asarray(next(iter(results.values()))[0])[0])
-    ax.loglog(iters, r0 * iters ** (-0.5), "k--", alpha=0.4, label="N^(-1/2) MC")
+    for alpha, (rmses, mrs, vs, _) in results.items():
+        ax.loglog(iters, rmses, "o-", label=f"α={alpha}")
     ax.set_xlabel("iterations"); ax.set_ylabel("RMSE")
-    ax.set_title("convergence — dashed=fit, dotted=bias floor")
-    ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8)
+    ax.set_title("RMSE vs iter (lower better)")
+    ax.grid(True, which="both", alpha=0.3); ax.legend()
 
-    # grid is always ≥2 cols (max(n_alpha, 2)), so axes[0, 1] always exists —
-    # do NOT fall back to axes[0, 0] for n_alpha==1 or the mean-ratio plot
-    # overdraws the convergence chart and the top-right panel renders blank.
-    ax = axes[0, 1]
+    ax = axes[0, 1] if n_alpha > 1 else axes[0, 0]
     for alpha, (rmses, mrs, vs, _) in results.items():
         ax.plot(iters, mrs, "o-", label=f"α={alpha}")
     ax.axhline(1.0, color="k", linestyle="--", alpha=0.5)
@@ -229,7 +160,7 @@ def main():
         axes[1, j].axis("off")
 
     plt.tight_layout()
-    out = os.path.join(os.path.dirname(__file__), f"J_alpha_sweep_w{args.width}_a{args.alphas}_geom_clamp{args.geom_clamp}_geom_growth{args.geom_clamp_growth}.png")
+    out = os.path.join(os.path.dirname(__file__), "J_alpha_sweep.png")
     plt.savefig(out, dpi=110); plt.close()
     print(f"\nsaved: {out}")
 

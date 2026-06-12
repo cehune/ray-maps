@@ -1,6 +1,6 @@
 import mitsuba as mi
 import drjit as dr
-from segments.primitives import Segment, SegmentTechnique
+from segments.primitives import Segment, SegmentTechnique, MIN_SEG_LEN
 from abc import ABC, abstractmethod
 
 
@@ -39,6 +39,14 @@ class SequentialSampler(Sampler):
         if auxiliary.y.is_camera or auxiliary.y.is_light:
             return 0.0
 
+        # NEE technique mass: any auxiliary in the cluster could have sampled
+        # segment.y by next-event estimation, with a ref-independent
+        # area-measure pdf (stored at segment creation; nonzero only for
+        # light-terminal segments). Adding it per-auxiliary makes the MMIS
+        # denominator the balance heuristic between BSDF-found light hits
+        # and NEE segments — MIS for free.
+        p_nee = getattr(segment, "nee_parea", 0.0)
+
         # Distance from auxiliary.y to segment.y — this is the connection vector
         # used in the area-measure conversion.  For adjacent segments in the
         # sequential model auxiliary.y == segment.x so this equals segment.len,
@@ -46,8 +54,14 @@ class SequentialSampler(Sampler):
         # the same cluster.
         delta  = segment.y.p - auxiliary.y.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
-            return 0.0
+        # GUARD SYMMETRY: must match the Segment admission threshold exactly.
+        # For the true parent, this distance IS segment.len, and Segment
+        # guarantees len >= MIN_SEG_LEN — so this guard can never delete a
+        # parent term for a segment that exists. (The old 1e-10 threshold
+        # zeroed parents of segments with len in [1e-8, 1e-5] while their
+        # G ~ 1/len^2 survived in the numerator: unbounded contribution.)
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
+            return p_nee
 
         # cant store outgoing direction local to the segment because we assume it
         # happens at the auxiliary endpoint, using auxiliary.y.n, check with Wenyou
@@ -62,7 +76,7 @@ class SequentialSampler(Sampler):
         try:
             bsdf = si.bsdf()
             if bsdf is None:
-                return 0.0
+                return p_nee
 
             pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
             try:
@@ -72,16 +86,17 @@ class SequentialSampler(Sampler):
         finally:
             si.wi = saved_wi
 
-        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
-
         # cos at segment.y (incoming side) — the area measure conversion
         cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
 
-        if cos_at_aux_y < 1e-6:
-            return 0.0
+        # NOTE: no grazing-cosine guard here. The return value never divides
+        # by cos at the auxiliary — pw itself goes to zero smoothly at grazing
+        # (cos/pi for diffuse). The old `cos_at_aux_y < 1e-6 -> return 0`
+        # deleted pdf mass for no numerical reason, breaking the w*G
+        # cancellation (numerator kept f*G > 0 for the same configuration).
 
         # eval_pdf returns solid-angle PDF directly (e.g. cos/π for diffuse) — no conversion needed
-        return pw * cos_at_seg_y / len_sq
+        return pw * cos_at_seg_y / len_sq + p_nee
 
 
     """
@@ -143,7 +158,8 @@ class LightSampler(Sampler):
             # couldn't have sampled it
         delta = segment.x.p - auxiliary.x.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
+        # GUARD SYMMETRY: same constant as Segment admission (see SequentialSampler)
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
             return 0.0
 
         wo_world = dr.normalize(delta)
@@ -170,12 +186,9 @@ class LightSampler(Sampler):
         finally:
             si.wi = saved_wi
 
-        cos_at_aux_x = float(dr.abs(dr.dot(auxiliary.x.n, wo_world)))
         cos_at_seg_x = float(dr.abs(dr.dot(segment.x.n, wo_world)))
 
-        if cos_at_aux_x < 1e-6:
-            return 0.0
-
+        # no grazing-cosine guard — pw handles grazing smoothly (see SequentialSampler)
         return pw * cos_at_seg_x / len_sq
 
     @staticmethod

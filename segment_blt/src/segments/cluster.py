@@ -235,7 +235,12 @@ class Cluster:
         self.seg_y_normals = np.array(
             [[float(s.y.n[k]) for k in range(3)] for s in self.segments], dtype=np.float64
         )
-        self._iteration += 1
+        # NOTE: _iteration is NOT incremented here. Progressive kernel
+        # shrinkage is owned by the caller (render_vec / G_convergence set
+        # cluster._iteration = i explicitly when progressive is enabled).
+        # The old self-increment made the kernel shrink even in
+        # "non-progressive" runs, which — combined with small-cluster pair
+        # loss — caused the slow downward mean-ratio drift across iterations.
 
     def get_cluster_segments(self, cluster_idx: int) -> list:
         """

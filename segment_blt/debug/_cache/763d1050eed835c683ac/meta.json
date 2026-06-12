@@ -1,0 +1,23 @@
+{
+ "code": "c70b6f752890f1a9",
+ "iters": {
+  "0": {
+   "mean": 0.13625888824515187
+  },
+  "1": {
+   "mean": 0.1361959892366258
+  }
+ },
+ "params": {
+  "H": 16,
+  "N": 1,
+  "W": 16,
+  "beta": 0.1,
+  "c": 30,
+  "light": false,
+  "mode": "O_direct_readout",
+  "nee": true
+ },
+ "shared": {},
+ "tag": "O_direct"
+}

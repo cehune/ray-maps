@@ -88,9 +88,13 @@ class MMIS:
         if len(pair_cache.mmis_j) > 0:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
 
-        # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable)
-        nz = p_sum > 0.00001
-        weights = np.where(nz, 1.0 / p_sum, 0.0)
+        # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable).
+        # Strictly positive test: with guard-symmetric conditional_pdf the
+        # parent term is always present for reachable segments, so any
+        # positive p_sum is meaningful. (The old 1e-5 floor silently allowed
+        # weights up to 1e5 on segments whose mass was spurious.)
+        nz = p_sum > 0.0
+        weights = np.divide(1.0, p_sum, out=np.zeros_like(p_sum), where=nz)
 
         if self.mmis_clamp_factor is not None:
             nz_weights = weights[weights > 0]
