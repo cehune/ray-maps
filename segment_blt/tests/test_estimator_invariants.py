@@ -371,23 +371,39 @@ def test_depth_d_readout(pool):
             vals.append(_lum(v))
         means[d] = float(np.mean(vals))
 
-    # exact parity with the inline depth-2 mirror
+    # exact parity with the inline depth-2 mirror. NOTE the single-segment
+    # (path died at v1) branch reads direct_in, NOT radiance_in*mmis: a path
+    # that terminated at its first hit has a zero continuation, so the
+    # dead-end rule seeds direct-only (see renderer._readout_path; the old
+    # full-cache read there was survivorship bias measured by O3).
     inline = []
     for fs in pool["camera_first"]:
         if fs is None:
             continue
-        second = getattr(fs, "_next_seg", None)
+        path = fs._path
+        L = len(path)
+        second = path[1] if L > 1 else None
         if second is not None:
             if second.y.is_light or second.x.is_light:
-                v = fs.throughput * fs.direct_in
+                v = fs.throughput * fs.direct_in          # emitter hit inside D
+            elif L == 2:
+                # path DIED at v2 (no continuation) → dead-end rule: v2 reads
+                # direct-only, not the voxel-average cache (survivorship bias)
+                v = fs.throughput * (fs.direct_in
+                                     + second.throughput * second.direct_in)
             else:
+                # alive at the depth-2 cap → v2 reads the full merged cache
                 v = fs.throughput * (fs.direct_in
                                      + second.throughput * second.radiance_in)
         else:
-            v = fs.throughput * fs.radiance_in * fs.mmis_weight
+            # single-segment path: died at v1 (or v1 is the light)
+            if fs.y.is_light or fs.x.is_light:
+                v = fs.throughput * fs.radiance_in        # pinned Le
+            else:
+                v = fs.throughput * fs.direct_in          # dead end → direct only
         inline.append(_lum(v))
     assert means[2] == pytest.approx(float(np.mean(inline)), rel=1e-12), (
-        "depth-2 readout no longer matches the original split-gather formula")
+        "depth-2 readout no longer matches the corrected split-gather formula")
 
     print(f"\n  depth-d readout means: " +
           ", ".join(f"d={d}: {m:.4e}" for d, m in means.items()))

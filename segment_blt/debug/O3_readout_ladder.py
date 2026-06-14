@@ -40,7 +40,7 @@ from segments.renderer import (_make_blt_components, _sample_segments,
                                _readout_path)
 from segments.pair_cache import build_pair_cache
 
-MAX_LEVEL = 6   # buckets 0..MAX_LEVEL, deeper levels fold into 'tail+'
+MAX_LEVEL = 16  # buckets 0..MAX_LEVEL; the max-depth tail gets its OWN bucket
 
 
 def bucket_pixel(fs, max_level):
@@ -48,10 +48,11 @@ def bucket_pixel(fs, max_level):
     Returns (levels[0..max_level], deep) as float arrays (3,), where `deep`
     collects everything past max_level plus max-depth tails."""
     levels = np.zeros((max_level + 1, 3))
-    deep = np.zeros(3)
+    deep = np.zeros(3)     # levels beyond max_level
+    tail = np.zeros(3)     # the truncated-path full-cache read (rad_in - D)
     path = getattr(fs, "_path", None)
     if path is None:
-        return levels, deep
+        return levels, deep, tail
 
     def c3(v):
         return np.array([float(v.x), float(v.y), float(v.z)])
@@ -59,7 +60,7 @@ def bucket_pixel(fs, max_level):
     s1 = path[0]
     if s1.y.is_light or s1.x.is_light:
         levels[0] = c3(s1.throughput * s1.radiance_in)   # pinned Le
-        return levels, deep
+        return levels, deep, tail
 
     P = c3(s1.throughput)                  # prefix throughput T0
     k = 0                                  # index into path; s_{k+1} = path[k]
@@ -75,16 +76,17 @@ def bucket_pixel(fs, max_level):
             deep += contrib
         nxt = path[k + 1] if k + 1 < len(path) else None
         if nxt is None:
-            # path cut by max_depth: the d=99 readout reads the full cache
-            # at the last segment MINUS its direct (already bucketed above)
+            # Truncated path (max_depth or early death): production now
+            # seeds D-only at EVERY truncated tail — a dead path is a
+            # zero-valued MC sample of its continuation. The would-be
+            # full-cache excess goes to `tail` for attribution only.
             tail = P * (c3(seg.radiance_in) - c3(D))
-            deep += tail
             break
         if nxt.y.is_light or nxt.x.is_light:
             break                          # own emitter hit lives inside D
         P = P * c3(nxt.throughput)
         k += 1
-    return levels, deep
+    return levels, deep, tail
 
 
 def main():
@@ -92,6 +94,7 @@ def main():
     ap.add_argument("--iters", type=int, default=16)
     ap.add_argument("--width", type=int, default=64)
     ap.add_argument("--ref-spp", type=int, default=512)
+    ap.add_argument("--c", type=int, default=30)
     ap.add_argument("--refresh", action="store_true")
     args = ap.parse_args()
     W = H = args.width
@@ -106,11 +109,12 @@ def main():
     sensor = scene.sensors()[0]
     cluster, mmis, propagation, samplers = _make_blt_components(
         scene, add_light_samples=False, num_prop_iterations=8,
-        cluster_c=30, geom_clamp_factor=None, mmis_clamp_factor=None,
+        cluster_c=args.c, geom_clamp_factor=None, mmis_clamp_factor=None,
     )
 
     lvl_mean = np.zeros(MAX_LEVEL + 1)
     deep_mean = 0.0
+    tail_mean = 0.0
     total_mean = 0.0
     worst_mismatch = 0.0
 
@@ -129,13 +133,14 @@ def main():
         for fs in cam_first:
             if fs is None:
                 continue
-            levels, deep = bucket_pixel(fs, MAX_LEVEL)
-            # exactness: buckets must reproduce the production d=99 readout
+            levels, deep, tail = bucket_pixel(fs, MAX_LEVEL)
+            # exactness: buckets minus the tail must reproduce the CURRENT
+            # production d=99 readout (full-cache truncation (original))
             ref_val = fs.throughput * _readout_path(fs._path, 99) \
                 if getattr(fs, "_path", None) else None
             if ref_val is not None:
                 rv = np.array([float(ref_val.x), float(ref_val.y), float(ref_val.z)])
-                tot = levels.sum(axis=0) + deep
+                tot = levels.sum(axis=0) + deep + tail
                 worst_mismatch = max(worst_mismatch,
                                      float(np.abs(tot - rv).max()))
             # channel SUM, matching the PT slices' .sum(-1).mean()
@@ -143,12 +148,13 @@ def main():
             # channel sum — which scaled every printed ratio by exactly 1/3)
             lvl_mean += levels.sum(axis=1)
             deep_mean += float(deep.sum())
-            total_mean += float(levels.sum() + deep.sum())
+            tail_mean += float(tail.sum())
+            total_mean += float(levels.sum() + deep.sum() + tail.sum())
         print(f"iter {i+1}/{args.iters} done   (bucket-vs-readout max "
               f"mismatch so far: {worst_mismatch:.2e})")
 
     n = args.iters * W * H
-    lvl_mean /= n; deep_mean /= n; total_mean /= n
+    lvl_mean /= n; deep_mean /= n; tail_mean /= n; total_mean /= n
 
     # Color3f is float32: products of ~16 terms accumulate ~1e-6 abs error.
     # Real bucketing bugs are O(0.1) — six orders above this tolerance.
@@ -167,10 +173,11 @@ def main():
         print(f"{L:>4} | {lvl_mean[L]:>11.4e} | {pt_slice:>11.4e} | {r:>6.3f}"
               f"   (cumulative vs PT({L+1}): {cum_r:.4f})")
     deep_truth = pt[-1] - pt[MAX_LEVEL + 1]
-    print(f"deep+tail | {deep_mean:>9.4e} | {deep_truth:>11.4e} | "
+    print(f"deep lvls | {deep_mean:>9.4e} | {deep_truth:>11.4e} | "
           f"{deep_mean/max(deep_truth,1e-12):>6.3f}")
-    print(f"\nTOTAL vs PT(inf): {total_mean/pt[-1]:.4f}   "
-          f"(G's fg99 mean_ratio should match this)")
+    print(f"tail(full)| {tail_mean:>9.4e} |   truncated-path full-cache read (rad_in-D), INCLUDED in production")
+    print(f"\nTOTAL (production, tail dropped) vs PT(inf): "
+          f"{total_mean/pt[-1]:.4f}   (G's fg99 mean_ratio should match this)")
 
 
 if __name__ == "__main__":

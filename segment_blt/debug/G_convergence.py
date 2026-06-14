@@ -36,7 +36,7 @@ import mitsuba as mi
 from segments.renderer import Renderer, _make_blt_components
 
 
-DEFAULT_REF = "/Users/mckalechung/Documents/proj/ray-maps/baseline/spp_renders-128x128-d-1/reference.exr"
+DEFAULT_REF = "/Users/celine/Documents/projects/ray-maps/baseline/spp_renders-400x400-d-1/reference.exr"
 
 
 def load_ref(path, W, H):

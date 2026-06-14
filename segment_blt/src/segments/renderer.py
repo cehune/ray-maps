@@ -140,22 +140,23 @@ def _readout_path(path, depth):
         return R
 
     seg_last = path[last]
-    # DEEP truncated tail (path ran into max_depth without reaching the
-    # light, before the designed cache level). Reading the FULL cache here
-    # is poison: depth-16 vertices are survivorship-concentrated in concave
-    # corners, exactly where the multi-hop cache's compounding eigenmode is
-    # hottest — O3 measured this bucket at 5.5-6.0x its truth slice (~+4%
-    # of the whole image at fg_depth=99). Reading only the cached direct
-    # drops true transport beyond len(path)+1 bounces (~0.1% in cornell).
-    # SHALLOW deaths (BSDF pdf=0 / escape at small depth) must keep the
-    # full-cache fallback — there the dropped indirect is real energy and
-    # the vertex distribution is not corner-biased (gate: TAIL_DIRECT_MIN).
-    TAIL_DIRECT_MIN = 6
-    if (last < depth - 1 and last >= TAIL_DIRECT_MIN
-            and not (seg_last.y.is_light or seg_last.x.is_light)):
+    # Distinguish "stopped here BY DESIGN" from "the path DIED here":
+    #   last < len-1  → we hit the fg_depth cap with the path still alive;
+    #                   rad_in(s_last) is the legitimate merged estimate of
+    #                   all transport beyond this vertex. Read full cache.
+    #   last == len-1 → the path terminated (max_depth, or a BSDF pdf=0
+    #                   backface/grazing death) WITHOUT reaching a light. Its
+    #                   continuation is a genuine ZERO MC sample — the sampled
+    #                   ray saw black. Reading the full cache instead injects
+    #                   the voxel-average INDIRECT radiance there: pure
+    #                   survivorship bias, and it leaks more with a wider
+    #                   kernel (O3: tail bucket 3.3e-2→3.85e-2 as c 10→90,
+    #                   the entire fg99 overcount). Seed direct-only; the
+    #                   dead continuation contributes its honest zero.
+    if last == len(path) - 1 and not (seg_last.y.is_light or seg_last.x.is_light):
         R = seg_last.direct_in
     else:
-        R = seg_last.radiance_in        # designed cache level / shallow fallback
+        R = seg_last.radiance_in        # full cache (alive at the depth cap)
     for k in range(last - 1, -1, -1):
         nxt = path[k + 1]
         if nxt.y.is_light or nxt.x.is_light:
