@@ -10,7 +10,7 @@ from qmc.sampler.scramble import OwenScramble
 from qmc.sampler.sampler import Sampler
 
 class SobolSampler(Sampler):
-    def __init__(self, dim_lookup, scrambler=None, seed=0):
+    def __init__(self, dim_lookup, max_dim = 64, scrambler=None, seed=0):
         """
         dim_lookup        : direction-number table, shape (max_dim, 32), from
                     load_direction_numbers(). Load with direction_numbers.py!!!!!
@@ -20,7 +20,10 @@ class SobolSampler(Sampler):
         seed      : global seed selecting an independent realization.
         """ 
         self.dim_lookup = dim_lookup
-        self.max_dim = dim_lookup.shape[0]
+        if max_dim > dim_lookup.shape[0]:
+            raise ValueError("Max dim has to be smaller")
+        self.max_dim = max_dim
+        
         # idc, we always need one to gaurantee that we can measure varaicne
         self.scrambler = scrambler if scrambler is not None else OwenScramble()
         self.seed = seed # just a number man, 0 is honestly probbaly always fine since
@@ -49,9 +52,14 @@ class SobolSampler(Sampler):
         
         """
         if dim >= self.max_dim:
-            raise IndexError(
-                f"Sobol dimension {dim} exceeds table max_dim {self.max_dim}; "
-                f"load more dimensions or use the padded sampler.")
+            # Past the good Sobol' dimensions: pad with an independent,
+            # deterministic uniform so deep paths still render. Quality
+            # degrades here by design — that's exactly what padded_sobol
+            # fixes properly. sample_index is in the hash so the spp samples
+            # decorrelate (otherwise the padded tail would be identical across
+            # every sample of a pixel and never converge).
+            return to_float(hash_ints(self.px, self.py, dim,
+                                      self.sample_index, seed=self.seed))
         seed = hash_ints(self.px, self.py, dim, seed=self.seed)
         val_u =  sobol_uint(self.sample_index, dim, self.dim_lookup)
         return to_float(self.scrambler.scramble(val_u, seed))

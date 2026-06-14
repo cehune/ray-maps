@@ -1,11 +1,14 @@
 import numpy as np
+import os
 
-# This function uses 0-based array indices. v[0] is the van der Corput
-# dimension (which Joe-Kuo numbers as dimension 1): it has no polynomial in
-# the table — its direction numbers are just bit-reversal of the index — so
-# we build it directly. The file's tabulated rows then fill v[1], v[2], ...
-# Joe-Kuo's numbering is 1-based with dim 1 implicit, so the file's first row
-# is d=2 (-> stored at v[1]).
+_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "joe_kuo_new_100.txt")
+
+def directions(max_dim: int, filepath: str = _TABLE_PATH) -> np.ndarray:
+    """(max_dim, 32) Sobol' direction-number table, built for exactly the
+    requested number of dimensions. This is the per-dimension computation;
+    callers only ever specify max_dim."""
+    return load_direction_numbers(filepath, max_dim=max_dim)
 
 def load_direction_numbers(filepath: str, max_dim: int = 64) -> np.ndarray:
     """

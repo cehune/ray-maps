@@ -1,6 +1,9 @@
 import mitsuba as mi
 import drjit as dr
-
+from qmc.sampler.constants import SCRAMBLERS, SAMPLERS
+from qmc.sampler.sobol_sampler import SobolSampler
+from qmc.sampler.padded_sobol_sampler import PaddedSobolSampler
+from qmc.sampler.sampler import Sampler
 mi.set_variant('scalar_rgb')
 
 
@@ -17,7 +20,6 @@ class BasicPathTracer(mi.SamplingIntegrator):
         super().__init__(props)
         self.max_depth = props.get('max_depth', 8)
         self.rr_depth  = props.get('rr_depth', 3)
-
     def sample(self,
                scene:   mi.Scene,
                sampler: mi.Sampler,
@@ -62,7 +64,7 @@ class BasicPathTracer(mi.SamplingIntegrator):
             # NEE, skip for Specular BSDF because would
             if mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth):
                 ds, em_weight = scene.sample_emitter_direction(
-                    si, sampler.next_2d(), True)
+                    si, mi.Point2f(*sampler.next_2d()), True)
 
                 if ds.pdf > 0.0:
                     wo_local = si.to_local(ds.d)
@@ -73,10 +75,9 @@ class BasicPathTracer(mi.SamplingIntegrator):
 
             # next bounce
             bsdf_sample, bsdf_weight = bsdf.sample(
-                bsdf_ctx,
-                si,
+                bsdf_ctx, si,
                 sampler.next_1d(),
-                sampler.next_2d()
+                mi.Point2f(*sampler.next_2d())
             )
 
             beta *= bsdf_weight
