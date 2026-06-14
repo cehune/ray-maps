@@ -1,8 +1,11 @@
 import numpy as np
 
-# dimension 0 (Van der Corput) has no entry in the table —
-# it's always just bit-reversal of the index, handled separately
-# in the Sobol generator. The table starts at dimension 1.
+# This function uses 0-based array indices. v[0] is the van der Corput
+# dimension (which Joe-Kuo numbers as dimension 1): it has no polynomial in
+# the table — its direction numbers are just bit-reversal of the index — so
+# we build it directly. The file's tabulated rows then fill v[1], v[2], ...
+# Joe-Kuo's numbering is 1-based with dim 1 implicit, so the file's first row
+# is d=2 (-> stored at v[1]).
 
 def load_direction_numbers(filepath: str, max_dim: int = 64) -> np.ndarray:
     """
@@ -17,11 +20,14 @@ def load_direction_numbers(filepath: str, max_dim: int = 64) -> np.ndarray:
            v[d][k] is the k-th direction number for dimension d,
            stored as a 32-bit integer (fixed point: value = v / 2^32)
 
-    The table file has one row per dimension (starting at dim 1),
-    with columns: s, a, m_1, m_2, ..., m_s
-    where s is the degree of the primitive polynomial,
-    a encodes the polynomial coefficients,
-    and m_1..m_s are the initial direction numbers.
+    The table file has a header line, then one row per dimension. Joe-Kuo's
+    numbering is 1-based and dimension 1 (van der Corput) is implicit, so the
+    first tabulated row is d=2. Columns are:
+        d  s  a  m_1  m_2 ... m_s
+    where d is the dimension index, s is the degree of the primitive
+    polynomial, a encodes its coefficients, and m_1..m_s are the initial
+    direction numbers. File row d is stored at array index v[d-1]
+    (so file d=2 -> v[1]).
     """
     M = 32  # bit precision
 
@@ -47,9 +53,10 @@ def load_direction_numbers(filepath: str, max_dim: int = 64) -> np.ndarray:
                 )
 
             tokens = line.split()
-            s = int(tokens[0])   # degree of primitive polynomial
-            a = int(tokens[1])   # polynomial coefficients (packed)
-            m = [int(x) for x in tokens[2:]]  # initial direction numbers
+            # columns: d  s  a  m_1 .. m_s   (d is the dimension index)
+            s = int(tokens[1])   # degree of primitive polynomial
+            a = int(tokens[2])   # polynomial coefficients (packed)
+            m = [int(x) for x in tokens[3:]]  # initial direction numbers
 
             # initial values: m[k] scaled to 32-bit fixed point
             # m[k] must be odd and < 2^(k+1)
