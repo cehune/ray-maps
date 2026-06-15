@@ -26,18 +26,7 @@ import matplotlib.pyplot as plt
 
 from qmc.sampler.direction_numbers import load_direction_numbers
 from qmc.sampler.sobol_sampler import SobolSampler
-from qmc.sampler.padded_sobol_sampler import PaddedSobolSampler
-from qmc.sampler.scramble import NoScramble, RandomDigitScramble, OwenScramble
-
-SCRAMBLERS = {
-    'none': NoScramble,
-    'xor':  RandomDigitScramble,
-    'owen': OwenScramble,
-}
-SAMPLERS = {
-    'sobol': SobolSampler,
-    'padded_sobol': PaddedSobolSampler
-}
+from qmc.sampler.constants import SCRAMBLERS, SAMPLERS
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TABLE = os.path.join(HERE, 'joe_kuo_new_100.txt')
 
