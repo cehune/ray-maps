@@ -1,6 +1,6 @@
 import mitsuba as mi
 import drjit as dr
-from segments.primitives import Segment, SegmentTechnique
+from segments.primitives import Segment, SegmentTechnique, MIN_SEG_LEN
 from abc import ABC, abstractmethod
 
 
@@ -39,6 +39,12 @@ class SequentialSampler(Sampler):
         if auxiliary.y.is_camera or auxiliary.y.is_light:
             return 0.0
 
+        # NOTE: the NEE / to-light-bridge mass used to be folded in here as
+        # `+ p_nee`. It is now its own path-construction technique
+        # (BridgeSampler, paper §S2 / Eq. S8); the MMIS caller adds it once per
+        # camera-side auxiliary, independent of this technique dispatch. This
+        # sampler returns ONLY the sequential-continuation pdf p(segment|aux).
+
         # Distance from auxiliary.y to segment.y — this is the connection vector
         # used in the area-measure conversion.  For adjacent segments in the
         # sequential model auxiliary.y == segment.x so this equals segment.len,
@@ -46,7 +52,11 @@ class SequentialSampler(Sampler):
         # the same cluster.
         delta  = segment.y.p - auxiliary.y.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
+        # GUARD SYMMETRY: must match the Segment admission threshold exactly.
+        # For the true parent, this distance IS segment.len, and Segment
+        # guarantees len >= MIN_SEG_LEN — so this guard can never delete a
+        # parent term for a segment that exists.
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
             return 0.0
 
         # cant store outgoing direction local to the segment because we assume it
@@ -54,29 +64,30 @@ class SequentialSampler(Sampler):
         wo_world = dr.normalize(delta)   # unit connection vector from auxiliary.y → segment.y
         wo_local = mi.Frame3f(auxiliary.y.n).to_local(wo_world)
 
-        # pw (s'|yi, si) bsdf sampling pdf to next direction (just along si+1)
-        # this is along x to y
-        # set wi correctly on a copy of auxiliary.y.si
+        # auxiliary.y.si is shared across MMIS calls — save/restore si.wi so we
+        # don't leave a stale wi behind for the next caller. Cheap, no allocation.
         si = auxiliary.y.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.y.n).to_local(-auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-
-        pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
         try:
-            pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return 0.0
 
-        cos_at_aux_y = float(dr.abs(dr.dot(auxiliary.y.n, wo_world)))
+            pw_result = bsdf.eval_pdf(mi.BSDFContext(), si, wo_local)
+            try:
+                pw = float(pw_result[1])  # eval_pdf returns (value, pdf) in some versions
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
 
         # cos at segment.y (incoming side) — the area measure conversion
         cos_at_seg_y = float(dr.abs(dr.dot(segment.y.n, wo_world)))
 
-        if cos_at_aux_y < 1e-6:
-            return 0.0
+        # NOTE: no grazing-cosine guard here. pw goes to zero smoothly at
+        # grazing (cos/π for diffuse), so deleting mass would break the w*G
+        # cancellation (numerator keeps f*G > 0 for the same configuration).
 
         # eval_pdf returns solid-angle PDF directly (e.g. cos/π for diffuse) — no conversion needed
         return pw * cos_at_seg_y / len_sq
@@ -105,19 +116,23 @@ class SequentialSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
-    
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            return bsdf.eval(mi.BSDFContext(), si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
+
 
 class LightSampler(Sampler):
     technique_type = SegmentTechnique.LIGHT
@@ -137,7 +152,8 @@ class LightSampler(Sampler):
             # couldn't have sampled it
         delta = segment.x.p - auxiliary.x.p
         len_sq = float(dr.squared_norm(delta))
-        if len_sq < 1e-10:
+        # GUARD SYMMETRY: same constant as Segment admission (see SequentialSampler)
+        if len_sq < MIN_SEG_LEN * MIN_SEG_LEN:
             return 0.0
 
         wo_world = dr.normalize(delta)
@@ -147,26 +163,26 @@ class LightSampler(Sampler):
         # light path travels x→y, so incoming at x is -seg.dir
 
         si = auxiliary.x.si
+        saved_wi = si.wi
         si.wi = mi.Frame3f(auxiliary.x.n).to_local(auxiliary.dir)
-
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return 0.0
-        
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-
-        pw_result = bsdf.eval_pdf(ctx, si, wo_local)
         try:
-            pw = float(pw_result[1])
-        except (TypeError, IndexError):
-            pw = float(pw_result)
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return 0.0
 
-        cos_at_aux_x = float(dr.abs(dr.dot(auxiliary.x.n, wo_world)))
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+
+            pw_result = bsdf.eval_pdf(ctx, si, wo_local)
+            try:
+                pw = float(pw_result[1])
+            except (TypeError, IndexError):
+                pw = float(pw_result)
+        finally:
+            si.wi = saved_wi
+
         cos_at_seg_x = float(dr.abs(dr.dot(segment.x.n, wo_world)))
 
-        if cos_at_aux_x < 1e-6:
-            return 0.0
-
+        # no grazing-cosine guard — pw handles grazing smoothly (see SequentialSampler)
         return pw * cos_at_seg_x / len_sq
 
     @staticmethod
@@ -180,17 +196,73 @@ class LightSampler(Sampler):
 
         frame_y = mi.Frame3f(seg.y.n)
         si = seg.y.si
+        saved_wi = si.wi
         si.wi = frame_y.to_local(wi_world)
         wo_local = frame_y.to_local(wo_world)
 
-        bsdf = si.bsdf()
-        if bsdf is None:
-            return mi.Color3f(0.0)
+        try:
+            bsdf = si.bsdf()
+            if bsdf is None:
+                return mi.Color3f(0.0)
 
-        # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
-        cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
-        if cos_o < 1e-6:
-            return mi.Color3f(0.0)
-        ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
-        return bsdf.eval(ctx, si, wo_local) / cos_o
+            # bsdf.eval returns f_r * cos(theta_o); divide out cos(theta_o) to get pure f_r
+            cos_o = abs(float(mi.Frame3f.cos_theta(wo_local)))
+            if cos_o < 1e-6:
+                return mi.Color3f(0.0)
+            ctx = mi.BSDFContext(mode=mi.TransportMode.Importance)
+            return bsdf.eval(ctx, si, wo_local) / cos_o
+        finally:
+            si.wi = saved_wi
+
+
+class BridgeSampler(Sampler):
+    """
+    Bridge-segment technique (paper §S2, Eq. S8 — the to-light case).
+
+    A bridge segment connects an existing camera-side segment to a freshly
+    sampled vertex on a light source. That is exactly next-event estimation,
+    expressed as its own path-construction technique rather than smuggled into
+    the sequential camera sampler.
+
+    Generation pdf (S8):  p(s | z_{i-1}) = p_L(x) · p_K(y | z_{i-1})
+      • p_L(x)            area-measure pdf of the sampled light vertex
+                          (emitter-pick × position pdf, reference-independent),
+                          stored on the segment as `bridge_parea` at creation.
+      • p_K(y | z_{i-1})  uniform-kernel perturbation placing the other endpoint
+                          in the kernel of an existing segment's endpoint. As
+                          everywhere, p_K = 1/|K| is constant across the cluster
+                          and cancels the numerator K in MMIS, so it is omitted
+                          here (the kernel-cancellation convention).
+
+    The MMIS caller adds this term once per camera-side auxiliary in the kernel
+    (the conditioning segments the bridge could have attached to), independent
+    of the auxiliary's own technique — i.e. it counts as a genuinely distinct
+    technique, giving the balance heuristic between BSDF-found light hits and
+    NEE. Applies to any light-terminal segment (NEE-made OR BSDF-found light
+    hit); both carry `bridge_parea`.
+
+    TODO (S6/S7): to-camera bridges and general camera↔light connections plug in
+    by relaxing the `segment.y.is_light` gate (adding p_W for the sensor case,
+    and a second p_K factor for the general two-kernel connection).
+    """
+    technique_type = SegmentTechnique.BRIDGE
+
+    def conditional_pdf(self, segment: Segment, auxiliary: Segment) -> float:
+        # to-light bridge applies only to light-terminal segments
+        if not segment.y.is_light:
+            return 0.0
+        # the conditioning segment must be a real camera-side surface endpoint:
+        # the to-light bridge attaches the light vertex to a camera vertex in
+        # the kernel. Light-side / synthetic endpoints are not valid conditioners.
+        if (auxiliary.technique != SegmentTechnique.CAMERA
+                or auxiliary.y.is_light or auxiliary.y.is_camera):
+            return 0.0
+        return float(getattr(segment, "bridge_parea", 0.0))
+
+    @staticmethod
+    def shift_invariant_bsdf(seg: Segment, next_seg: Segment) -> mi.Color3f:
+        # Bridge segments are never the BSDF vertex of a merge (their y is on the
+        # light); propagation always evaluates f_r with the CAMERA sampler at the
+        # receiver. Provided only for registry symmetry.
+        return SequentialSampler.shift_invariant_bsdf(seg, next_seg)
 

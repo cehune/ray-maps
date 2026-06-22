@@ -9,6 +9,36 @@ SCRIPT_DIR = Path(__file__).resolve().parent              # .../ray-maps/baselin
 SAMPLES_DIR = (SCRIPT_DIR / ".." / "samples").resolve()   # .../ray-maps/samples
 
 
+import re
+
+
+def load_scene_box_rfilter(scene_path, **kwargs):
+    """Load a Mitsuba scene XML forcing the film's reconstruction filter to box.
+
+    The authored tent/gaussian filters splat each sample onto neighbouring
+    pixels, blooming bright emitters ~1px outward. A per-pixel renderer (the
+    segment BLT accumulates one sample into its own pixel) has no such bloom, so
+    against a tent/gaussian reference every light shows a dark ring in the diff —
+    a fixed per-pixel error that never averages out. A box rfilter makes the
+    reference apples-to-apples. We inject via a sibling temp file so the scene's
+    relative asset paths still resolve.
+    """
+    scene_path = Path(scene_path)
+    xml = scene_path.read_text()
+    if re.search(r"<rfilter\b[^>]*?/>", xml):
+        xml = re.sub(r"<rfilter\b[^>]*?/>", '<rfilter type="box"/>', xml, count=1)
+    elif re.search(r"<rfilter\b.*?</rfilter>", xml, re.S):
+        xml = re.sub(r"<rfilter\b.*?</rfilter>", '<rfilter type="box"/>', xml, count=1, flags=re.S)
+    else:  # no rfilter authored — inject one inside the first <film ...>
+        xml = re.sub(r"(<film\b[^>]*>)", r'\1\n\t\t\t<rfilter type="box"/>', xml, count=1)
+    tmp = scene_path.with_name(f"._box_{scene_path.name}")
+    tmp.write_text(xml)
+    try:
+        return mi.load_file(str(tmp), **kwargs)
+    finally:
+        tmp.unlink()
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="SPP sweep + log-log RMSE slope for a Mitsuba 3 sample scene."
@@ -38,8 +68,8 @@ def main():
         raise FileNotFoundError(f"No scene at {scene_path}")
 
     # Load once at the authored resolution just to read the aspect ratio.
-    # This is a parse, not a render -- cheap.
-    scene = mi.load_file(str(scene_path))
+    # This is a parse, not a render -- cheap. (box rfilter: see helper docstring)
+    scene = load_scene_box_rfilter(scene_path)
     fs = scene.sensors()[0].film().crop_size()
     w0, h0 = int(fs[0]), int(fs[1])
     aspect = w0 / h0
@@ -47,7 +77,7 @@ def main():
     if args.width is not None:
         width = args.width
         height = round(width / aspect)               # height auto-scaled
-        scene = mi.load_file(str(scene_path), resx=width, resy=height)
+        scene = load_scene_box_rfilter(scene_path, resx=width, resy=height)
 
         # Confirm the override bound to a $resx/$resy in the XML; otherwise the
         # film built at the wrong size and the RMSE-vs-reference is meaningless.
@@ -86,6 +116,7 @@ def main():
     def rmse(img, ref):
         return float(np.sqrt(np.mean((np.asarray(img) - np.asarray(ref)) ** 2)))
 
+    print(f"output at {out_dir}")
     # --- PT-vs-itself sanity sweep ---
     spps = [1, 2, 4, 8, 16, 32, 64, 128, 256]
     pt_errs = []

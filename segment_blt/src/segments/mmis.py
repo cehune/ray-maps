@@ -36,6 +36,10 @@ class MMIS:
     should own
     the summation loop, the 1/p_sum inversion, the cluster lookup — the algorithm structure that is sampler-agnostic"""
 
+    # Firefly suppression on MMIS weight: cap at mmis_clamp_factor × median(nonzero w).
+    # None disables. Sane range [10, 100]; trade-off is bias (smaller) vs variance (larger).
+    mmis_clamp_factor: float | None = None
+
     def compute_mmis_weight(self, segment, main_seg_idx, cluster: Cluster, samplers) -> float:
         """
         For unidirectional: sum conditional PDFs over all segments in cluster,
@@ -44,17 +48,24 @@ class MMIS:
         """
         p_sum = 0.0
 
+        # The bridge (NEE / to-light) technique is a distinct technique added
+        # per auxiliary, independent of the auxiliary's own technique dispatch
+        # (paper §S2 / Eq. S8). Mirrors build_pair_cache's vec MMIS loop.
+        bridge_sampler = samplers.get(SegmentTechnique.BRIDGE)
+
         # s' can be a continuation of a camera segment t where y_t ≈ x_{s'}
         x_cluster_idx = cluster.endpoint_to_cluster[main_seg_idx * 2 + 0]
         start, end = cluster.cluster_ranges[x_cluster_idx]
         for flat_idx in cluster.sorted_indices[start:end]:
             aux_seg_idx, which_end = cluster.endpoint_metadata[flat_idx]
-            if aux_seg_idx == main_seg_idx: continue 
+            if aux_seg_idx == main_seg_idx: continue
             if which_end == 1:  # y-endpoint of t is in this cluster
                 t = cluster.segments[aux_seg_idx]
-                sampler = samplers[t.technique]
-                
-                p_sum += sampler.conditional_pdf(segment, t)
+                sampler = samplers.get(t.technique)
+                if sampler is not None:
+                    p_sum += sampler.conditional_pdf(segment, t)
+                if bridge_sampler is not None:
+                    p_sum += bridge_sampler.conditional_pdf(segment, t)
 
         return 1.0 / p_sum if p_sum > 0.0 else 0.0
 
@@ -84,15 +95,19 @@ class MMIS:
         if len(pair_cache.mmis_j) > 0:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
 
-        # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable)
-        nz = p_sum > 0.0000001
-        weights = np.where(nz, 1.0 / p_sum, 0.0)
+        # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable).
+        # Strictly positive test: with guard-symmetric conditional_pdf the
+        # parent term is always present for reachable segments, so any
+        # positive p_sum is meaningful. (The old 1e-5 floor silently allowed
+        # weights up to 1e5 on segments whose mass was spurious.)
+        nz = p_sum > 0.0
+        weights = np.divide(1.0, p_sum, out=np.zeros_like(p_sum), where=nz)
 
-
-        nz_weights = weights[weights > 0]
-        if len(nz_weights) > 0:
-            cap = 20.0 * np.median(nz_weights)   # tune in [10, 100]
-            weights = np.minimum(weights, cap)
+        if self.mmis_clamp_factor is not None:
+            nz_weights = weights[weights > 0]
+            if len(nz_weights) > 0:
+                cap = float(self.mmis_clamp_factor) * np.median(nz_weights)
+                weights = np.minimum(weights, cap)
 
         # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 
         for seg_idx, seg in enumerate(cluster.segments):

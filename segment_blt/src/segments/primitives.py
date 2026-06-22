@@ -40,6 +40,15 @@ def make_endpoint_si(p: mi.Vector3f, n: mi.Vector3f) -> mi.SurfaceInteraction3f:
     si.sh_frame = mi.Frame3f(n)  # at least a valid frame derived from n
     return si
 
+# Single source of truth for the minimum admissible segment length.
+# Any pdf guard that rejects short configurations MUST use this same
+# constant: a segment that exists (len >= MIN_SEG_LEN) must never have its
+# generating pdf term zeroed by a LOOSER epsilon, or the 1/len^2 in G
+# survives in the numerator with no cancelling term in the MMIS denominator
+# (unbounded w*G — firefly).
+MIN_SEG_LEN = 1e-8
+
+
 class SegmentTechnique(IntEnum):
     CAMERA = 0
     LIGHT  = 1
@@ -72,7 +81,7 @@ class Segment:
         difference = self.y.p - self.x.p
         self.len = dr.norm(difference)
         
-        if self.len < 1e-8:  # tune this threshold to your scene scale
+        if self.len < MIN_SEG_LEN:
             raise ValueError(f"Degenerate segment: length {self.len} too small")
         # DIR IS EQUIVALENT TO S HAT IN THE PAPER
         self.dir = difference / self.len
