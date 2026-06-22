@@ -42,7 +42,8 @@ class BasicPathTracer(mi.SamplingIntegrator):
 
         depth = 0
         while depth < self.max_depth:
-
+            # Each decision is addressed by (depth, slot) below, so the dimension
+            # is fixed regardless of branching — nothing to set up per bounce.
             si = scene.ray_intersect(ray)
 
             # hits emitter directly
@@ -61,10 +62,11 @@ class BasicPathTracer(mi.SamplingIntegrator):
 
             bsdf = si.bsdf(ray)
 
-            # NEE, skip for Specular BSDF because would
+            # NEE, skipped for specular BSDFs. The "nee" slot stays reserved
+            # whether or not we draw it, so the BSDF sample below is unaffected.
             if mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth):
                 ds, em_weight = scene.sample_emitter_direction(
-                    si, mi.Point2f(*sampler.next_2d()), True)
+                    si, mi.Point2f(*sampler.bounce_2d(depth, "nee")), True)
 
                 if ds.pdf > 0.0:
                     wo_local = si.to_local(ds.d)
@@ -76,8 +78,8 @@ class BasicPathTracer(mi.SamplingIntegrator):
             # next bounce
             bsdf_sample, bsdf_weight = bsdf.sample(
                 bsdf_ctx, si,
-                sampler.next_1d(),
-                mi.Point2f(*sampler.next_2d())
+                sampler.bounce_1d(depth, "lobe"),
+                mi.Point2f(*sampler.bounce_2d(depth, "dir"))
             )
 
             beta *= bsdf_weight
@@ -91,11 +93,12 @@ class BasicPathTracer(mi.SamplingIntegrator):
             prev_bsdf_pdf   = float(bsdf_sample.pdf)
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
 
-            # RR
+            # RR. depth is incremented first, so the just-finished bounce is
+            # (depth-1) — address RR with it to keep it in that bounce's block.
             depth += 1
             if depth >= self.rr_depth:
                 rr_prob = min(float(dr.max(beta)), 0.95)
-                if float(sampler.next_1d()) > rr_prob:
+                if float(sampler.bounce_1d(depth - 1, "rr")) > rr_prob:
                     break
                 beta /= rr_prob
 

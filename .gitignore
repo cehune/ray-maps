@@ -3,3 +3,8 @@ build/
 *.png
 **/__pycache__/
 *.pyc
+# cached debug renders (regenerate with the producing script; see debug/_cache.py)
+**/_renders/
+*.exr
+*.json
+*.egg-info

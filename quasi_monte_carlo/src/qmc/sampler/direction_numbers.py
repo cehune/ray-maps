@@ -2,7 +2,7 @@ import numpy as np
 import os
 
 _TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "joe_kuo_new_100.txt")
+                           "new-joe-kuo-6.21201.txt")
 
 def directions(max_dim: int, filepath: str = _TABLE_PATH) -> np.ndarray:
     """(max_dim, 32) Sobol' direction-number table, built for exactly the

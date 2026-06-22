@@ -28,10 +28,10 @@ class Renderer:
         for y in range(H):
             for x in range(W):
                 for i in range(spp):
-                    sampler.setup_path(x, y, i)         # reset dim counter, set per-pixel seed
+                    sampler.setup_path(x, y, i)         # bind this (pixel, sample)
 
-                    jx, jy = sampler.next_2d()          # dims 0,1: pixel jitter
-                    lens   = mi.Point2f(*sampler.next_2d())   # dims 2,3: aperture
+                    jx, jy = sampler.cam_2d("jitter")   # dims 0,1: pixel jitter
+                    lens   = mi.Point2f(*sampler.cam_2d("lens"))   # dims 2,3: aperture
                     pos    = mi.Point2f((x + jx) / W, (y + jy) / H)
 
                     ray, weight = sensor.sample_ray(0.0, 0.5, pos, lens)

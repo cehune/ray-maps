@@ -4,7 +4,7 @@ from qmc.sampler.direction_numbers import directions
 from qmc.sampler.independent_sampler import IndependentSampler
 
 def build_sampler(name, spp, max_dim=32, scramble_method="owen", seed=0):
-    """ 
+    """
     construct a QMC sampler.
     `name` in {'sobol','padded_sobol','independent'}
     """

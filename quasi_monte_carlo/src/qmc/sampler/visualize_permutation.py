@@ -36,7 +36,7 @@ def collect_2d(sampler, n):
     pts = np.empty((n, 2))
     for i in range(n):
         sampler.setup_path(0, 0, i)
-        pts[i] = sampler.next_2d()
+        pts[i] = sampler.cam_2d("jitter")
     return pts
 
 
