@@ -118,12 +118,10 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
             sj = segs[int(j)]
             # TODO: light-technique parentage is flipped (parent.x == child.y);
             # add when the bidirectional path is repaired.
+            # Bridge (NEE) segments are technique=BRIDGE, already excluded by the
+            # CAMERA check below — they are not classical near-field children
+            # (their near-field stratum is the bridge itself).
             if sj.technique != SegmentTechnique.CAMERA or sj.x.is_camera:
-                continue
-            # NEE segments are not classical children: the near-field stratum
-            # is covered by the BSDF child alone (routing both would double
-            # count direct light without an explicit classical MIS weight)
-            if getattr(sj, "is_nee", False):
                 continue
             p = y_owner.get(id(sj.x))
             if p is None or p == int(j):
@@ -259,15 +257,25 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
     M = len(mmis_j_arr)
     mmis_pdf = np.zeros(M, dtype=np.float64)
 
+    # The bridge (NEE / to-light) technique is added ONCE PER MMIS PAIR,
+    # independent of the auxiliary's own technique dispatch — it is a distinct
+    # path-construction technique (paper §S2 / Eq. S8), not a continuation of
+    # the auxiliary. BridgeSampler returns p_L(x') for a light-terminal seg_j
+    # conditioned on a camera-side auxiliary, 0 otherwise. In the camera-only
+    # limit this reproduces the old per-auxiliary `+ p_nee` denominator exactly.
+    bridge_sampler = samplers.get(SegmentTechnique.BRIDGE)
     for k in range(M):
         j_idx = int(mmis_j_arr[k])
         t_idx = int(mmis_t_arr[k])
         seg_j = segs[j_idx]
         seg_t = segs[t_idx]
-        sampler = samplers.get(seg_t.technique)   # auxiliary's technique
-        if sampler is None:
-            continue
-        mmis_pdf[k] = sampler.conditional_pdf(seg_j, seg_t)    
+        p = 0.0
+        sampler = samplers.get(seg_t.technique)   # auxiliary's technique → sequential pdf
+        if sampler is not None:
+            p += sampler.conditional_pdf(seg_j, seg_t)
+        if bridge_sampler is not None:
+            p += bridge_sampler.conditional_pdf(seg_j, seg_t)
+        mmis_pdf[k] = p
 
     return PairCache(
         prop_i=prop_i_arr,
@@ -420,14 +428,20 @@ def build_pair_cache_exact(cluster, samplers, r: float,
     # ── Conditional-PDF cache for MMIS pairs ─────────────────────────────────
     M = len(mmis_j_list)
     mmis_pdf = np.zeros(M, dtype=np.float64)
+    # bridge (NEE / to-light) technique added per pair — see build_pair_cache.
+    bridge_sampler = samplers.get(SegmentTechnique.BRIDGE)
     for k in range(M):
         j_idx = mmis_j_list[k]
         t_idx = mmis_t_list[k]
+        seg_j = segs[j_idx]
         seg_t = segs[t_idx]
+        p = 0.0
         sampler = samplers.get(seg_t.technique)
-        if sampler is None:
-            continue
-        mmis_pdf[k] = sampler.conditional_pdf(segs[j_idx], seg_t)
+        if sampler is not None:
+            p += sampler.conditional_pdf(seg_j, seg_t)
+        if bridge_sampler is not None:
+            p += bridge_sampler.conditional_pdf(seg_j, seg_t)
+        mmis_pdf[k] = p
 
     return PairCache(
         prop_i=np.array(prop_i_list, dtype=np.int32) if P > 0 else np.empty(0, np.int32),

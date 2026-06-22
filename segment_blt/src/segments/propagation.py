@@ -54,9 +54,8 @@ class Propagation:
         for j, sj in enumerate(cluster.segments):
             if float(sj.len) >= min_len:
                 continue
+            # bridge (NEE) segments are technique=BRIDGE — excluded here.
             if sj.technique != SegmentTechnique.CAMERA or sj.x.is_camera:
-                continue
-            if getattr(sj, "is_nee", False):   # see build_pair_cache
                 continue
             p = y_owner.get(id(sj.x))
             if p is None or p == j:

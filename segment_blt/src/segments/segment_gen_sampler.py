@@ -29,16 +29,17 @@ def _area_pdf_of_light_hit(scene, ref_si, si_light):
         return 0.0
 
 
-def make_nee_segment(scene, sampler, si, vertex_sp):
-    """Sample the emitter from vertex_sp (NEE) and return a light-terminal
-    segment carrying Le, or None (occluded / zero pdf / degenerate).
+def make_bridge_segment(scene, sampler, si, vertex_sp):
+    """Sample a light vertex from vertex_sp and return a to-light BRIDGE segment
+    (paper §S2, Eq. S8 — next-event estimation as its own technique), or None
+    (occluded / zero pdf / degenerate).
 
-    The segment is a normal camera-technique merge source: its y is pinned
-    to Le, its geom term is real, and conditional_pdf adds its stored
-    nee_parea so the MMIS denominator MIS-weights it against BSDF-found
-    light hits automatically. is_nee=True keeps it out of classical-link
-    routing (the near-field stratum is covered by BSDF children alone) and
-    out of readout path chains.
+    The segment is a light-terminal merge source: x = the camera-path vertex,
+    y = the sampled light vertex (pinned to Le), geom term real. It is tagged
+    technique=BRIDGE so (a) BridgeSampler accounts for its generation pdf in the
+    MMIS denominator (MIS against BSDF-found light hits, automatically), and
+    (b) the technique != CAMERA checks keep it out of classical-link routing.
+    `bridge_parea` stores p_L(x), the reference-independent light-vertex area pdf.
     """
     ds, spec = scene.sample_emitter_direction(
         si, mi.Point2f(sampler.next_1d(), sampler.next_1d()), True)
@@ -53,11 +54,13 @@ def make_nee_segment(scene, sampler, si, vertex_sp):
                             Le=mi.Color3f(spec * ds.pdf))   # spec = Le/pdf_ω
     try:
         seg = Segment(vertex_sp, light_sp, throughput=mi.Color3f(0.0),
-                      technique=SegmentTechnique.CAMERA)
+                      technique=SegmentTechnique.BRIDGE)
     except ValueError:
         return None
-    seg.is_nee = True
-    seg.nee_parea = float(ds.pdf) * cos_l / (dist * dist)   # area measure
+    # p_L(x): convert the solid-angle emitter-direction pdf back to area measure
+    # (= emitter-pick × position pdf, reference-independent) so it matches the
+    # bridge_parea stored on BSDF-found light hits for the balance heuristic.
+    seg.bridge_parea = float(ds.pdf) * cos_l / (dist * dist)
     return seg
 
 
@@ -86,15 +89,16 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
     segment_path.append(Segment(starting_sp, first_sp, throughput=mi.Color3f(starting_weight), technique=technique))
 
     if first_sp.is_light:
-        # BSDF-found light hit: store the NEE area pdf of this y for MIS
-        segment_path[-1].nee_parea = _area_pdf_of_light_hit(
+        # BSDF-found light hit: store p_L(y) so BridgeSampler MIS-weights this
+        # hit against the to-light bridge (NEE) technique.
+        segment_path[-1].bridge_parea = _area_pdf_of_light_hit(
             scene, starting_sp.si, si) if do_nee else 0.0
         return segment_path
 
     if do_nee:
-        nee = make_nee_segment(scene, sampler, si, first_sp)
-        if nee is not None:
-            nee_out.append(nee)
+        bridge = make_bridge_segment(scene, sampler, si, first_sp)
+        if bridge is not None:
+            nee_out.append(bridge)
 
     # then we set up the loop
     prev_sp = first_sp
@@ -134,8 +138,8 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
         try:
             seg = Segment(prev_sp, curr_sp, throughput=mi.Color3f(bsdf_weight), technique=technique)
             if curr_sp.is_light and do_nee:
-                # MIS partner pdf for this BSDF-found light hit
-                seg.nee_parea = _area_pdf_of_light_hit(scene, si, si_next)
+                # MIS partner pdf for this BSDF-found light hit (vs the bridge)
+                seg.bridge_parea = _area_pdf_of_light_hit(scene, si, si_next)
             segment_path.append(seg)
 
         except ValueError:
@@ -145,9 +149,9 @@ def generate_path(scene, sampler, starting_weight,starting_sp, si, technique = S
             break
 
         if do_nee:
-            nee = make_nee_segment(scene, sampler, si_next, curr_sp)
-            if nee is not None:
-                nee_out.append(nee)
+            bridge = make_bridge_segment(scene, sampler, si_next, curr_sp)
+            if bridge is not None:
+                nee_out.append(bridge)
 
         prev_sp = curr_sp
         si = si_next

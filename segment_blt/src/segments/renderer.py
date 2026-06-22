@@ -16,7 +16,7 @@ import numpy as np
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3, row_gain_cap=1.0, merge_min_len_factor=1.0):
+def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weight=0.67, num_prop_iterations=4, cluster_c=10, apply_kernel_correction=False, geom_clamp_factor=None, mmis_clamp_factor=None, geom_clamp_mode="hard", alpha=2/3, row_gain_cap=1.0, merge_min_len_factor=1.0, add_bridge_segments = True):
     mmis        = MMIS()
     mmis.mmis_clamp_factor = mmis_clamp_factor
     propagation = Propagation(num_prop_iterations=num_prop_iterations,
@@ -27,10 +27,13 @@ def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weig
                               merge_min_len_factor=merge_min_len_factor)
     cluster = Cluster(c=cluster_c, alpha=alpha)
     cluster.set_scene_aabb(scene.bbox())
+    # BridgeSampler is always registered: it accounts for the to-light bridge
+    # (NEE) technique in the MMIS denominator (paper §S2/S8). Harmless when no
+    # bridge segments exist — its conditional_pdf is then 0 everywhere.
     if add_light_samples:
-        samplers = Sampler.build_registry(SequentialSampler(), LightSampler())
-    else:
-        samplers = Sampler.build_registry(SequentialSampler())
+        samplers = Sampler.build_registry(SequentialSampler(), LightSampler(), BridgeSampler())
+    if add_bridge_segments:
+        samplers = Sampler.build_registry(SequentialSampler(), BridgeSampler())
     return cluster, mmis, propagation, samplers
 
 
@@ -45,8 +48,9 @@ def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_lig
     (vertex → sampled emitter point, visibility-tested). These flood every
     voxel with light-terminal Le sources so the cached-direct gather D(v)
     stops being density estimation of rare BSDF emitter hits — the main
-    grain mechanism vs an NEE path tracer. MIS against BSDF light hits is
-    automatic via the nee_parea term in conditional_pdf.
+    grain mechanism vs an NEE path tracer. These are tagged technique=BRIDGE;
+    MIS against BSDF light hits is automatic via BridgeSampler in the MMIS
+    denominator (paper §S2/S8).
     """
     segment_pool = SegmentPoolV2()
     camera_first_segments = []

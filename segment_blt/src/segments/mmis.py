@@ -48,17 +48,24 @@ class MMIS:
         """
         p_sum = 0.0
 
+        # The bridge (NEE / to-light) technique is a distinct technique added
+        # per auxiliary, independent of the auxiliary's own technique dispatch
+        # (paper §S2 / Eq. S8). Mirrors build_pair_cache's vec MMIS loop.
+        bridge_sampler = samplers.get(SegmentTechnique.BRIDGE)
+
         # s' can be a continuation of a camera segment t where y_t ≈ x_{s'}
         x_cluster_idx = cluster.endpoint_to_cluster[main_seg_idx * 2 + 0]
         start, end = cluster.cluster_ranges[x_cluster_idx]
         for flat_idx in cluster.sorted_indices[start:end]:
             aux_seg_idx, which_end = cluster.endpoint_metadata[flat_idx]
-            if aux_seg_idx == main_seg_idx: continue 
+            if aux_seg_idx == main_seg_idx: continue
             if which_end == 1:  # y-endpoint of t is in this cluster
                 t = cluster.segments[aux_seg_idx]
-                sampler = samplers[t.technique]
-                
-                p_sum += sampler.conditional_pdf(segment, t)
+                sampler = samplers.get(t.technique)
+                if sampler is not None:
+                    p_sum += sampler.conditional_pdf(segment, t)
+                if bridge_sampler is not None:
+                    p_sum += bridge_sampler.conditional_pdf(segment, t)
 
         return 1.0 / p_sum if p_sum > 0.0 else 0.0
 
