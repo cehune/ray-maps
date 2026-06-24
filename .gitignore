@@ -8,3 +8,4 @@ build/
 *.exr
 *.json
 *.egg-info
+*.obj
