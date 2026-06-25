@@ -27,9 +27,6 @@ class Cluster:
     voxel_size: float = 0.0 # THIS IS SIDE LENGTH!!!
     scene_vol: float = 0.0
 
-    # one scalar per cluster, same indexing as rest
-    cluster_kernel_values: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float64))
-
     def set_segments(self, segments):
         self.segments = segments
 
@@ -235,6 +232,12 @@ class Cluster:
         self.seg_y_normals = np.array(
             [[float(s.y.n[k]) for k in range(3)] for s in self.segments], dtype=np.float64
         )
+        # NOTE: _iteration is NOT incremented here. Progressive kernel
+        # shrinkage is owned by the caller (render_vec / G_convergence set
+        # cluster._iteration = i explicitly when progressive is enabled).
+        # The old self-increment made the kernel shrink even in
+        # "non-progressive" runs, which — combined with small-cluster pair
+        # loss — caused the slow downward mean-ratio drift across iterations.
 
     def get_cluster_segments(self, cluster_idx: int) -> list:
         """
@@ -254,28 +257,3 @@ class Cluster:
         self.endpoint_to_cluster = np.empty(len(self.segments) * 2, dtype=np.int32)
         for c_idx, (start, end) in enumerate(self.cluster_ranges):
             self.endpoint_to_cluster[self.sorted_indices[start:end]] = c_idx
-
-    def compute_cluster_kernel_values(self):
-        # plane with normal n slicing through axis aligned cube of side a
-        # what is the area of the polygon cut out?
-
-        # According tot he paper: The kernel value is then approximated as
-        # the reciprocal of the intersection area between this plane and the voxel
-        # Area projected = A(plane) * | n dot e|
-        """
-        here e is the most aligned axis, dot n to the most aligned axis (ig gives how much its tilted)
-        A plane has a min of l * l, max of l * (corner to corner distance)
-        we make an approximation that one of the sides of the plane always coincides (ie the projected
-        plane is just tilted on one axis) 
-
-        | -> /
-
-        Obviously in this case, you just have the tilted side l / cos tilt angle
-        that cos tilt angle is just n * the most aligned axis lol
-
-        this is implicit in the mmis so we don't actually need it, but it's useful
-        as a side bit. 
-        """
-        abs_n = np.abs(self.cluster_mean_normals)
-        tilt = abs_n.max(axis=1)
-        self.cluster_kernel_values =  tilt / (self.voxel_size ** 2)
