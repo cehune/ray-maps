@@ -379,7 +379,13 @@ class TestHelp:
 
             cluster    = make_minimal_cluster(segs, kr)
             mmis       = make_mmis()
-            propagator = Propagation(num_prop_iterations=n_hops)
+            # This test checks the raw G/p cancellation algebra; the synthetic
+            # two-source cluster has a row gain of exactly 1.6 (not energy-
+            # conserving by construction), which the production row_gain_cap
+            # would project down to 1.0. Pin the stabilizers off.
+            propagator = Propagation(num_prop_iterations=n_hops,
+                                     row_gain_cap=None,
+                                     merge_min_len_factor=None)
             mmis.compute_all_mmis_weights(cluster, make_samplers())
             for s in cluster.segments:
                 s.radiance_in = s.Le
