@@ -8,4 +8,12 @@ build/
 *.exr
 *.json
 *.egg-info
+# large / binary assets — keep on disk, never in git
 *.obj
+*.serialized
+*.tgz
+*.pdf
+.DS_Store
+# unused sample scenes (cbox/lamp are the ones we render); meshes stay on disk
+samples/dragon/
+samples/matpreview/
