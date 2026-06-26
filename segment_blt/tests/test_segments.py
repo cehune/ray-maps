@@ -4,7 +4,7 @@ import drjit as dr
 from segments.primitives import SurfacePoint, Segment
 
 def test_two_bounce_segment():
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
 
     sensor = scene.sensors()[0]
     film = sensor.film()

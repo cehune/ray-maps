@@ -4,7 +4,7 @@ from segments.segment_gen_sampler import *
 
 def test_light_path_returns_segments():
     """sample_light_path returns a non-empty list of Segment objects"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(0, 1)
 
@@ -20,7 +20,7 @@ def test_light_path_returns_segments():
 
 def test_light_path_first_segment_is_from_emitter():
     """First segment must start from a light surface point AFTER REVERSAL"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(1, 1)
 
@@ -36,7 +36,7 @@ def test_light_path_first_segment_is_from_emitter():
 
 def test_light_path_segment_geometry():
     """All segments have valid length, normalised direction, and positive geometry term"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(2, 1)
 
@@ -63,7 +63,7 @@ def test_light_path_segment_geometry():
 def test_light_path_weight_is_finite_and_positive():
     # TODO: Remove, will break with MIS
     """All segment throughputs must be finite and positive"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(3, 1)
 
@@ -85,7 +85,7 @@ def test_light_path_weight_is_finite_and_positive():
 
 def test_light_path_segments_are_connected():
     """Consecutive segments must share an endpoint"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(4, 1)
 
@@ -105,7 +105,7 @@ def test_light_path_segments_are_connected():
 def test_light_path_last_segment_hits_light_or_surface():
     # TODO: Remove, will break with MIS
     """Last segment endpoint must be either a light or a valid non-degenerate surface"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sampler = mi.load_dict({'type': 'independent'})
     sampler.seed(6, 1)
 
@@ -126,7 +126,7 @@ def test_light_path_last_segment_hits_light_or_surface():
 
 def test_camera_path_returns_segments():
     """sample_camera_path returns a non-empty list of Segment objects"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sensor = scene.sensors()[0]
     film = sensor.film()
     film_size = film.crop_size()
@@ -156,7 +156,7 @@ def test_camera_path_returns_segments():
 
 def test_camera_path_first_segment_starts_at_camera():
     """First segment must start from the camera surface point"""
-    scene = mi.load_file('../samples/cbox/cbox.xml')
+    scene = mi.load_file('../samples/cbox/scene.xml', resx=64, resy=64)
     sensor = scene.sensors()[0]
     film = sensor.film()
     film_size = film.crop_size()
