@@ -428,20 +428,29 @@ class Renderer:
                                   width=128, height=128, n_iterations=8,
                                   mode='vec', beta=0.25, add_light_samples = False):
         """
+        Load a Mitsuba scene .xml from disk and render it with BLT.
+
+        scene_path : path to a Mitsuba scene .xml (e.g. samples/cbox/scene.xml).
+                     Resolution is overridden via resx/resy — exactly like
+                     debug/_setup.cornell_scene — so width/height here win over
+                     whatever the XML's film declares, keeping BLT renders and
+                     baseline references on the same camera/geometry.
         mode: 'ref'    → simple path tracer (render)
               'nonvec' → BLT non-vectorized
               'vec'    → BLT vectorized  (default)
         """
         mi.set_variant(self.variant)
-        #scene = mi.load_file(scene_path)
-        scene_dict = mi.cornell_box()
-        width = 200
-        height = 200
-        scene_dict["sensor"]["film"]["width"] = width
-        scene_dict["sensor"]["film"]["height"] = height
-        scene_dict["integrator"] = {"type": "path", "max_depth": -1}
-        scene = mi.load_dict(scene_dict)
-        print("add lgith: ", add_light_samples)
+        # resx/resy override the film resolution when the XML declares them
+        # (cbox/scene.xml does, like debug/_setup.cornell_scene). For scenes that
+        # don't, fall back to a plain load and adopt the film's own resolution.
+        try:
+            scene = mi.load_file(scene_path, resx=width, resy=height)
+        except Exception:
+            scene = mi.load_file(scene_path)
+        film = scene.sensors()[0].film()
+        width, height = int(film.size().x), int(film.size().y)
+        print(f"[render] {scene_path}  {width}x{height}  mode={mode}  "
+              f"iters={n_iterations}  add_light={add_light_samples}")
         if mode == 'ref':
             image = self.render(scene, width, height, spp=n_iterations)
         elif mode == 'nonvec':
@@ -457,7 +466,6 @@ class Renderer:
         # plt.imsave(save_file_path, np.clip(image ** (1 / 2.2), 0, 1))
         save_with_tonemap(save_file_path, image)
 
-        norm = image / np.percentile(image, 99.5)
         img = np.array(image)
         print(f"mean: {img.mean():.4f}")
         print(f"max:  {img.max():.4f}")
