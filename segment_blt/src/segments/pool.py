@@ -33,5 +33,9 @@ class SegmentPoolV2:
     
     def add_path(self, path):
         self.paths.extend(path)
+
+    def add_segment(self, seg: Segment):
+        self.paths.append(seg)
+        
     def clear(self):
         self.paths.clear()

@@ -53,6 +53,7 @@ class SegmentTechnique(IntEnum):
     CAMERA = 0
     LIGHT  = 1
     BRIDGE = 2
+    RAY_TRACING = 3
 
 @dataclass
 class Segment:

@@ -67,6 +67,12 @@ class MMIS:
                 if bridge_sampler is not None:
                     p_sum += bridge_sampler.conditional_pdf(segment, t)
 
+        # Unconditional ray-tracing technique: ONE term per segment (not per
+        # auxiliary) — p_RT(s)=G(s)/(pi|M|), independent of any t.
+        rt = samplers.get(SegmentTechnique.RAY_TRACING)
+        if rt is not None:
+            p_sum += rt.conditional_pdf(segment)
+
         return 1.0 / p_sum if p_sum > 0.0 else 0.0
 
     def compute_all_mmis_weights(self, cluster, samplers) -> None:
@@ -94,6 +100,11 @@ class MMIS:
         # accumulate conditional PDFs for non-trivial segments
         if len(pair_cache.mmis_j) > 0:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
+
+        # Unconditional ray-tracing technique: one term per segment (p_rt[i]=0
+        # for trivial segments, so their pinned 1.0 sentinel is preserved).
+        if getattr(pair_cache, "p_rt", None) is not None and pair_cache.p_rt.size == S:
+            p_sum += pair_cache.p_rt
 
         # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable).
         # Strictly positive test: with guard-symmetric conditional_pdf the
