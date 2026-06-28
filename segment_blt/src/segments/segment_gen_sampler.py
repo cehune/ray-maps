@@ -240,3 +240,81 @@ def evaluate_path_base(segments: list[Segment]) -> mi.Color3f:
     return throughput * Le
 
 
+# This is ray tracing sampling yo
+def sample_segment_from_point(scene, point: SurfacePoint, sampler,
+                              technique=SegmentTechnique.CAMERA, max_tries=8):
+    """Ray-tracing segment sampler (Eq. 13, Fig. 2b), conditional half.
+
+    Fix x = `point`, cosine-sample a direction at x, ray-cast to y, and return
+    (segment, p(y|x)) with p(y|x) the AREA-measure pdf at y:
+
+        p(y|x) = (|n_x·ŝ|/π) · |n_y·ŝ| / |x-y|²
+
+    Retries up to max_tries on scene escapes; None if all miss. Multiply the
+    returned p(y|x) by p(x) = 1/|M| (see sample_surface_point) to recover the
+    full p(s) = G(s)/(π|M|).
+    """
+    x_si = point.si
+    frame = mi.Frame3f(x_si.n)
+
+    for _ in range(max_tries):
+        local_dir = mi.warp.square_to_cosine_hemisphere(
+            mi.Point2f(sampler.next_1d(), sampler.next_1d())
+        )
+        pdf = float(mi.warp.square_to_cosine_hemisphere_pdf(local_dir))
+        if pdf == 0: # impossible
+            continue
+        
+        world_dir = frame.to_world(local_dir)
+        si_y = scene.ray_intersect(x_si.spawn_ray(world_dir))
+        if not si_y.is_valid():
+            continue
+
+        y_sp = SurfacePoint.from_intersection(si_y)
+        emitter = si_y.emitter(scene)
+        if emitter:
+            y_sp.is_light = True
+            y_sp.Le = emitter.eval(si_y)    
+
+        cos_y = float(dr.abs(dr.dot(si_y.n, world_dir)))
+        dist  = float(si_y.t)                                  # unit dir -> t = |x-y|
+        if cos_y < 1e-8 or dist < 1e-6:
+            continue                                           # grazing/degenerate
+
+        p_y_given_x = pdf * cos_y / (dist * dist)
+        if p_y_given_x <= 0.0:
+            continue
+
+        try:
+            seg = Segment(point, y_sp, throughput=mi.Color3f(1.0),  # <-- see note
+                          technique=technique)
+        except ValueError:
+            continue                                           # too short -> retry
+
+        seg.sample_parea = p_y_given_x      # <-- wire to whatever MMIS reads
+        return seg, p_y_given_x
+
+    return None
+
+def sample_surface_point(scene, sampler):
+    """Sample x uniformly by area over all geometry. Returns (SurfacePoint, p_x)
+    with p_x = 1/|M|. Shapes are picked ∝ area; the area-selection and intra-
+    shape 1/area_i pdfs cancel to a flat 1/|M| (Eq. 13's p(x))."""
+    shapes = scene.shapes()
+    areas  = np.array([float(s.surface_area()) for s in shapes])
+    total  = areas.sum()
+    if total <= 0.0:
+        return None
+
+    u   = float(sampler.next_1d()) * total
+    idx = min(int(np.searchsorted(np.cumsum(areas), u)), len(shapes) - 1)
+    _ps = shapes[idx].sample_position(
+        0.0, mi.Point2f(sampler.next_1d(), sampler.next_1d()))
+    ps  = _ps[0] if isinstance(_ps, tuple) else _ps   # shape→ps; some builds→(ps, …)
+
+    # Materialise a REAL SI so propagation doesn't get a synthetic SI -> segfault.
+    si = scene.ray_intersect(mi.Ray3f(ps.p + 1e-4 * ps.n, -ps.n))
+    if not si.is_valid():
+        return None
+
+    return SurfacePoint.from_intersection(si), 1.0 / total

@@ -1,5 +1,6 @@
 import mitsuba as mi
 import drjit as dr
+import math
 from segments.primitives import Segment, SegmentTechnique, MIN_SEG_LEN
 from abc import ABC, abstractmethod
 
@@ -266,3 +267,25 @@ class BridgeSampler(Sampler):
         # receiver. Provided only for registry symmetry.
         return SequentialSampler.shift_invariant_bsdf(seg, next_seg)
 
+class RayTracingSampler(Sampler):
+    """Independent ray-tracing segment sampler (Eq. 13, Fig. 2b).
+
+    UNCONDITIONAL technique: its pdf depends only on the segment, not on any
+    auxiliary, so conditional_pdf ignores `auxiliary`. p(s) = G(s)/(pi|M|) is
+    computed from geometry (segment.geom_term) — NOT read from sample_parea —
+    so it is defined for EVERY segment in the cluster, including camera-sampled
+    ones that RT could have produced but which carry no sample_parea.
+    |M| = total scene surface area.
+
+    Sample-count note: this single term enters the MMIS denominator once per
+    segment. If RT runs on a different sample-count footing than the
+    per-auxiliary sequential sum, scale by n_RT to match the balance heuristic
+    (West et al. 2022 / supplemental).
+    """
+    technique_type = SegmentTechnique.RAY_TRACING
+
+    def __init__(self, scene_area: float):
+        self.inv_pi_M = 1.0 / (math.pi * float(scene_area))
+
+    def conditional_pdf(self, segment: Segment, auxiliary: Segment = None) -> float:
+        return float(segment.geom_term) * self.inv_pi_M

@@ -37,6 +37,9 @@ class PairCache:
     mmis_t: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     mmis_pdf: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
+    # unconditional ray-tracing technique: one pdf term per segment, p_RT(s)=G(s)/(pi|M|)
+    p_rt: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+
     # segments whose MMIS weight is trivially 1.0 (x.is_camera or x.is_light)
     trivial_mmis: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
@@ -93,9 +96,6 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
         min_len = float(merge_min_len_factor) * float(cluster.voxel_size)
         mergeable = np.array([float(s.len) >= min_len for s in segs], dtype=bool)
         n_excl = int((~mergeable).sum())
-        if n_excl > 0:
-            print(f"  [sub-kernel exclusion] {n_excl}/{S} segments "
-                  f"({100*n_excl/S:.1f}%) shorter than {min_len:.3e} excluded as merge sources")
     else:
         mergeable = np.ones(S, dtype=bool)
 
@@ -130,9 +130,6 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
             cls_i_list.append(int(p))
             cls_j_list.append(int(j))
             cls_w_list.append([float(t.x), float(t.y), float(t.z)])
-        if cls_i_list:
-            print(f"  [classical links] {len(cls_i_list)} sub-kernel segments "
-                  f"routed to their parents via exact connections")
 
     prop_i_list: list[int] = []
     prop_j_list: list[int] = []
@@ -277,6 +274,16 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
             p += bridge_sampler.conditional_pdf(seg_j, seg_t)
         mmis_pdf[k] = p
 
+    # Unconditional ray-tracing technique: ONE pdf term per segment (not per
+    # pair). p_RT(s)=G(s)/(pi|M|) from geometry, defined for every segment.
+    # Trivial segments stay pinned to weight 1 (p_rt = 0 there).
+    rt = samplers.get(SegmentTechnique.RAY_TRACING)
+    p_rt = np.zeros(S, dtype=np.float64)
+    if rt is not None:
+        for i in range(S):
+            if i not in trivial_set:
+                p_rt[i] = rt.conditional_pdf(segs[i])
+
     return PairCache(
         prop_i=prop_i_arr,
         prop_j=prop_j_arr,
@@ -284,6 +291,7 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
         mmis_j=mmis_j_arr,
         mmis_t=mmis_t_arr,
         mmis_pdf=mmis_pdf,
+        p_rt=p_rt,
         trivial_mmis=np.array(sorted(trivial_set), dtype=np.int32),
         cls_i=np.array(cls_i_list, dtype=np.int32) if cls_i_list else np.empty(0, np.int32),
         cls_j=np.array(cls_j_list, dtype=np.int32) if cls_j_list else np.empty(0, np.int32),

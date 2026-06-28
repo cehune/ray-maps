@@ -208,11 +208,6 @@ class Propagation:
                 if n_capped > 0:
                     scale = np.where(over, cap / np.maximum(row_gain, 1e-300), 1.0)
                     weighted_fr = weighted_fr * scale[pair_cache.prop_i][:, np.newaxis]
-                    total = float(row_gain.sum())
-                    lost = float(np.maximum(row_gain - cap, 0.0).sum())
-                    print(f"  [row-gain cap {cap:g}] capped {n_capped}/{S} rows "
-                          f"({100*n_capped/S:.1f}%), max pre-cap gain={row_gain.max():.2f}, "
-                          f"gain removed={100*lost/max(total,1e-300):.2f}%")
 
         has_cls = len(pair_cache.cls_i) > 0
 
