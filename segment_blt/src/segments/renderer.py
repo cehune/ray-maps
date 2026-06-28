@@ -36,9 +36,28 @@ def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weig
     techniques = [SequentialSampler(), BridgeSampler()]
     if add_light_samples:
         techniques.append(LightSampler())
+    # Independent ray-tracing technique (Eq. 13): unconditional, p(s)=G(s)/(pi|M|).
+    scene_area = sum(float(s.surface_area()) for s in scene.shapes())
+    techniques.append(RayTracingSampler(scene_area))
     samplers = Sampler.build_registry(*techniques)
     return cluster, mmis, propagation, samplers
 
+def _sample_segments_ray_tracing(scene, sensor, sampler, height, width,
+                                 add_light_segments=False, add_bridge_segments=False,  # OFF for QMC study
+                                 cam_segments_per_pixel=10):
+    pool = SegmentPoolV2()
+
+    # transport pool: independent ray-traced segments (one LDS point each)
+    for _ in range(width * height * cam_segments_per_pixel):
+        res = sample_surface_point(scene, sampler)
+        if res is None: continue
+        point, p_x = res
+        out = sample_segment_from_point(scene, point, sampler, SegmentTechnique.RAY_TRACING)
+        if out is None: continue
+        seg, p_y_given_x = out
+        seg.sample_parea = p_x * p_y_given_x 
+        pool.add_segment(seg)
+    return pool
 
 def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_light_samples = True,
                      add_bridge_segments = True):
@@ -100,9 +119,6 @@ def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_lig
                 segment_pool.add_path(light_segments)
                 light_paths_added += 1
 
-        print(f"  sampled {len(camera_first_segments)} camera paths, "
-            f"{light_paths_added}/{n_light_paths} light paths "
-            f"(β={beta})")
     if n_bridge:
         print(f"  [bridge] {n_bridge} bridge segments added "
               f"({n_bridge/max(len(segment_pool.paths),1)*100:.0f}% of pool)")
@@ -209,11 +225,10 @@ def _diag(label, cluster, pair_cache, camera_first_segments):
         if s is not None and float(s.radiance_in.x) > 0
     )
 
-    print(f"  [{label}] S={S} segs | P={P} prop-pairs | M={M} mmis-pairs | "
-          f"T={T} trivial")
-    print(f"         light-terminal={n_light_segs} | Le>0={n_nonzero_Le} | "
-          f"mmis_w>0={n_nonzero_mmis} | rad_in>0={n_nonzero_rad} | "
-          f"camera-first rad>0={n_nonzero_out}")
+    # (diagnostic prints removed — _diag now computes silently; re-add here
+    #  if you need the S/P/M/coverage breakdown for a specific debug session)
+    _ = (label, S, P, M, T, n_light_segs, n_nonzero_Le,
+         n_nonzero_mmis, n_nonzero_rad, n_nonzero_out)
 
 @dataclass
 class Renderer:
@@ -331,46 +346,32 @@ class Renderer:
                             verbose=False, beta = 0.25, add_light_samples = True,
                             final_gather_depth=2, add_bridge_segments=True):
         
-        t0 = time.time()
         segment_pool, camera_first_segments = _sample_segments(
             scene, sensor, sampler, height, width, beta, add_light_samples,
             add_bridge_segments=add_bridge_segments
         )
-        print(f"sampling: {time.time()-t0:.1f}s")
 
         if not segment_pool.paths:
             return np.zeros((height, width, 3))
-        t0 = time.time()
         cluster.set_segments(segment_pool.paths)
         cluster.cluster(np.random.default_rng(seed=iteration))
-        print(f"cluster: {time.time()-t0:.1f}s")       
-        t0 = time.time()
         # Build pair cache once — BSDF + PDF computed here, reused in propagation
         pair_cache = build_pair_cache(
             cluster, samplers,
             merge_min_len_factor=propagation.merge_min_len_factor,
         )
-        print(f"pair: {time.time()-t0:.1f}s")
 
         # MMIS weights (vec)
-        t0 = time.time()
         mmis.compute_all_mmis_weights_vec(cluster, pair_cache)
-        print(f"mmis: {time.time()-t0:.1f}s")
 
         # Propagation (vec)
-        t0 = time.time()
         propagation.iterate_propogation_vec(cluster, pair_cache)
-        print(f"prop: {time.time()-t0:.1f}s")
 
         if verbose:
             _diag("vec", cluster, pair_cache, camera_first_segments)
 
-        t0 = time.time()
         bin = _final_gather(camera_first_segments, height, width,
                             depth=final_gather_depth)
-
-        trace_firefly(bin, camera_first_segments, height, width, 5)
-        print(f"sampling: {time.time()-t0:.1f}s")
         return bin
 
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
@@ -409,8 +410,6 @@ class Renderer:
                 # _compute_progressive_voxel_size reads self._iteration. Without this,
                 # every outer iter re-uses voxel_size_0 and there's no kernel shrinkage.
                 cluster._iteration = i
-            print(f"[vec] iter {i}/{n_iterations}"
-                  f"{f'   voxel_size={cluster.voxel_size:.3e}' if i > 0 else ''}")
             sampler = mi.load_dict({'type': 'independent', 'sample_count': 1})
             sampler.seed(i, width * height)
             accum += self._render_iterate_vec(
