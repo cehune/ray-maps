@@ -10,6 +10,56 @@ from segments.propagation import Propagation
 from segments.pair_cache import build_pair_cache
 import time
 import numpy as np
+from enum import Enum
+from pathlib import Path
+
+
+class Technique(str, Enum):
+    """Segment-source techniques. Hand one — or a list — to
+    save_render_by_scene_path:  techniques=[Technique.CAMERA, Technique.RAY_TRACING]
+    (the plain strings "camera"/"raytracing" work too). A camera anchor is always
+    traced regardless; these only choose what fills the transport pool."""
+    CAMERA = "camera"           # full sequential camera paths
+    RAY_TRACING = "raytracing"  # independent Eq.13 ray-tracing segments
+
+
+def _techniques_to_source(techniques):
+    """Map a Technique / string / list-thereof to the internal transport mode the
+    render methods understand: "camera" | "raytracing" | "both"."""
+    if isinstance(techniques, (str, Technique)):
+        techniques = [techniques]
+    techs = {str(getattr(t, "value", t)).lower() for t in techniques}
+    bad = techs - {"camera", "raytracing"}
+    if bad:
+        raise ValueError(f"unknown technique(s) {sorted(bad)}; valid: ['camera', 'raytracing']")
+    if techs == {"raytracing"}:
+        return "raytracing"
+    if techs == {"camera", "raytracing"}:
+        return "both"
+    return "camera"   # {"camera"} or empty
+
+
+SAMPLES_DIR = Path(__file__).resolve().parents[3] / "samples"   # .../ray-maps/samples
+
+
+def _resolve_scene(scene):
+    """Accept a sample NAME ('cbox', 'lamp', 'dragon', 'matpreview') ->
+    samples/<name>/scene.xml, or a direct path to a scene .xml (or a scene dir).
+    Returns an absolute path string."""
+    p = Path(scene)
+    if p.suffix == ".xml" and p.exists():
+        return str(p)
+    if p.is_dir() and (p / "scene.xml").exists():
+        return str(p / "scene.xml")
+    cand = SAMPLES_DIR / str(scene) / "scene.xml"
+    if cand.exists():
+        return str(cand)
+    if p.exists():
+        return str(p)
+    avail = (sorted(d.name for d in SAMPLES_DIR.iterdir() if d.is_dir())
+             if SAMPLES_DIR.is_dir() else [])
+    raise FileNotFoundError(
+        f"scene {scene!r} not found (looked for {cand}). Available samples: {avail}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,21 +92,48 @@ def _make_blt_components(scene, add_light_samples, kernel_radius=16, kernel_weig
     samplers = Sampler.build_registry(*techniques)
     return cluster, mmis, propagation, samplers
 
+def _add_ray_tracing_segments(scene, sampler, pool, n_segments):
+    """Append n_segments independent Eq.13 ray-tracing segments to `pool`.
+
+    Each: x uniform by area, y by cosine + ray cast, tagged RAY_TRACING with
+    sample_parea = p(s) = G(s)/(pi|M|). Returns the number actually added
+    (scene escapes / degenerates are skipped)."""
+    added = 0
+
+    shapes = scene.shapes()
+    areas  = np.array([float(s.surface_area()) for s in shapes])
+    total  = areas.sum()
+    if total <= 0.0:
+        return None
+    
+    cdf = np.cumsum(areas)
+
+    for _ in range(n_segments):
+        u   = float(sampler.next_1d()) * total
+        idx = min(int(np.searchsorted(cdf, u)), len(shapes) - 1)
+        shape = shapes[idx]
+        res = sample_surface_point(scene, sampler, total, shape)
+        if res is None:
+            continue
+        point, p_x = res
+        out = sample_segment_from_point(scene, point, sampler, SegmentTechnique.RAY_TRACING)
+        if out is None:
+            continue
+        seg, p_y_given_x = out
+        seg.sample_parea = p_x * p_y_given_x          # full p(s) = G(s)/(pi|M|)
+        pool.add_segment(seg)
+        added += 1
+    return added
+
+
 def _sample_segments_ray_tracing(scene, sensor, sampler, height, width,
                                  add_light_segments=False, add_bridge_segments=False,  # OFF for QMC study
                                  cam_segments_per_pixel=10):
+    """Standalone pool of independent ray-tracing segments (no pixel anchors).
+    Kept for back-compat / QMC studies; render paths use _collect_segments."""
     pool = SegmentPoolV2()
-
-    # transport pool: independent ray-traced segments (one LDS point each)
-    for _ in range(width * height * cam_segments_per_pixel):
-        res = sample_surface_point(scene, sampler)
-        if res is None: continue
-        point, p_x = res
-        out = sample_segment_from_point(scene, point, sampler, SegmentTechnique.RAY_TRACING)
-        if out is None: continue
-        seg, p_y_given_x = out
-        seg.sample_parea = p_x * p_y_given_x 
-        pool.add_segment(seg)
+    _add_ray_tracing_segments(scene, sampler, pool,
+                              width * height * cam_segments_per_pixel)
     return pool
 
 def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_light_samples = True,
@@ -124,6 +201,64 @@ def _sample_segments(scene, sensor, sampler, height, width, beta = 0.25, add_lig
               f"({n_bridge/max(len(segment_pool.paths),1)*100:.0f}% of pool)")
 
     return segment_pool, camera_first_segments
+
+
+def _sample_camera_anchors(scene, sensor, sampler, height, width):
+    """One first-hit camera segment per pixel — the anchor the pixel-forming
+    readout requires. No sequential bounces: deeper transport must come from the
+    other segments in the pool (e.g. ray-tracing). Returns (pool, anchors)."""
+    pool = SegmentPoolV2()
+    anchors = []
+    for y in range(height):
+        for x in range(width):
+            pos_sample = mi.Point2f(x + sampler.next_1d(), y + sampler.next_1d())
+            ap_sample  = mi.Point2f(sampler.next_1d(), sampler.next_1d())
+            film_pos   = mi.Point2f(pos_sample.x / width, pos_sample.y / height)
+            ray, ray_weight = sensor.sample_ray(
+                time=0.0, sample1=sampler.next_1d(),
+                sample2=film_pos, sample3=ap_sample)
+            si = scene.ray_intersect(ray)
+            # max_depth=0 -> only the camera→first-hit segment, no bounces
+            segments = sample_camera_path(scene, sampler, ray, ray_weight, si, max_depth=0)
+            if segments:
+                segments[0]._next_seg = None
+                segments[0]._path = segments
+                anchors.append(segments[0])
+                pool.add_path(segments)
+            else:
+                anchors.append(None)
+    return pool, anchors
+
+
+def _collect_segments(scene, sensor, sampler, height, width, *,
+                      source="camera", beta=0.25,
+                      add_light_samples=True, add_bridge_segments=True,
+                      rt_segments_per_pixel=1):
+    """Build one iteration's transport pool + per-pixel camera anchors.
+
+    source: internal transport mode — "camera" (full sequential camera paths,
+    + light/bridge), "raytracing" (first-hit anchors only; transport from
+    independent Eq.13 segments), or "both". save_render_by_scene_path takes a
+    Technique list and maps it here via _techniques_to_source.
+
+    A camera anchor is ALWAYS produced — the readout reads the cluster cache at
+    the camera's first hit, so the image cannot form without it. Ray tracing only
+    adds transport samples; it never replaces the anchors.
+    """
+    camera_transport = source in ("camera", "both")
+
+    if camera_transport:
+        pool, anchors = _sample_segments(
+            scene, sensor, sampler, height, width, beta,
+            add_light_samples, add_bridge_segments=add_bridge_segments)
+    else:  # raytracing: anchors only; RT fills transport below
+        pool, anchors = _sample_camera_anchors(scene, sensor, sampler, height, width)
+
+    if source in ("raytracing", "both"):
+        _add_ray_tracing_segments(scene, sampler, pool,
+                                  width * height * rt_segments_per_pixel)
+    return pool, anchors
+
 
 def _readout_path(path, depth):
     """
@@ -288,9 +423,11 @@ class Renderer:
 
     def _render_iterate_nonvec(self, scene, sensor, sampler, height, width,
                                cluster, mmis, propagation, samplers, iteration=0,
-                               verbose=False, beta = 0.25, add_light_samples = True):
-        segment_pool, camera_first_segments = _sample_segments(
-            scene, sensor, sampler, height, width, beta, add_light_samples
+                               verbose=False, beta = 0.25, add_light_samples = True,
+                               segment_source="camera", rt_segments_per_pixel=1):
+        segment_pool, camera_first_segments = _collect_segments(
+            scene, sensor, sampler, height, width, source=segment_source, beta=beta,
+            add_light_samples=add_light_samples, rt_segments_per_pixel=rt_segments_per_pixel,
         )
 
         if not segment_pool.paths:
@@ -311,11 +448,15 @@ class Renderer:
             )
             _diag("nonvec", cluster, pair_cache, camera_first_segments)
 
-        return _final_gather(camera_first_segments, height, width)
+        # raytracing-only has no camera path to walk: read the full cache at the
+        # first hit (depth-1). camera/both use the default split depth.
+        depth = 1 if segment_source == "raytracing" else 2
+        return _final_gather(camera_first_segments, height, width, depth=depth)
 
     def render_nonvec(self, scene, height=128, width=128, n_iterations=8,
                       kernel_radius=16, kernel_weight=0.67,
-                      num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True):
+                      num_prop_iterations=4, verbose=True, beta = 0.25, add_light_samples = True,
+                      segment_source="camera", rt_segments_per_pixel=1):
         """
         BLT render using the non-vectorized MMIS + propagation path.
         Use as a reference to compare against render_vec().
@@ -334,7 +475,8 @@ class Renderer:
             accum += self._render_iterate_nonvec(
                 scene, sensor, sampler, height, width,
                 cluster, mmis, propagation, samplers,
-                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples
+                iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples,
+                segment_source=segment_source, rt_segments_per_pixel=rt_segments_per_pixel,
             )
 
         return accum / n_iterations
@@ -344,11 +486,13 @@ class Renderer:
     def _render_iterate_vec(self, scene, sensor, sampler, height, width,
                             cluster, mmis, propagation, samplers, iteration=0,
                             verbose=False, beta = 0.25, add_light_samples = True,
-                            final_gather_depth=2, add_bridge_segments=True):
+                            final_gather_depth=2, add_bridge_segments=True,
+                            segment_source="camera", rt_segments_per_pixel=1):
         
-        segment_pool, camera_first_segments = _sample_segments(
-            scene, sensor, sampler, height, width, beta, add_light_samples,
-            add_bridge_segments=add_bridge_segments
+        segment_pool, camera_first_segments = _collect_segments(
+            scene, sensor, sampler, height, width, source=segment_source, beta=beta,
+            add_light_samples=add_light_samples, add_bridge_segments=add_bridge_segments,
+            rt_segments_per_pixel=rt_segments_per_pixel,
         )
 
         if not segment_pool.paths:
@@ -370,8 +514,10 @@ class Renderer:
         if verbose:
             _diag("vec", cluster, pair_cache, camera_first_segments)
 
-        bin = _final_gather(camera_first_segments, height, width,
-                            depth=final_gather_depth)
+        # raytracing-only has no camera path to walk: read the full cluster cache
+        # at the first hit (depth-1). camera/both keep the configured split depth.
+        eff_depth = 1 if segment_source == "raytracing" else final_gather_depth
+        bin = _final_gather(camera_first_segments, height, width, depth=eff_depth)
         return bin
 
     def render_vec(self, scene, height=128, width=128, n_iterations=8,
@@ -381,7 +527,8 @@ class Renderer:
                    geom_clamp_factor=None, mmis_clamp_factor=None,
                    geom_clamp_mode="hard", alpha=0.2, row_gain_cap=1.0,
                    merge_min_len_factor=1.0, final_gather_depth=2,
-                   add_bridge_segments=True):
+                   add_bridge_segments=True,
+                   segment_source="camera", rt_segments_per_pixel=1):
         """
         BLT render using the vectorized (numpy) MMIS + propagation path.
 
@@ -416,7 +563,8 @@ class Renderer:
                 scene, sensor, sampler, height, width,
                 cluster, mmis, propagation, samplers,
                 iteration=i, verbose=verbose, beta=beta, add_light_samples=add_light_samples,
-                final_gather_depth=final_gather_depth, add_bridge_segments=add_bridge_segments
+                final_gather_depth=final_gather_depth, add_bridge_segments=add_bridge_segments,
+                segment_source=segment_source, rt_segments_per_pixel=rt_segments_per_pixel,
             )
 
         return accum / n_iterations
@@ -425,11 +573,14 @@ class Renderer:
 
     def save_render_by_scene_path(self, scene_path, save_file_path="output.png",
                                   width=128, height=128, n_iterations=8,
-                                  mode='vec', beta=0.25, add_light_samples = False):
+                                  mode='vec', beta=0.25, add_light_samples = False,
+                                  techniques=(Technique.CAMERA,), rt_segments_per_pixel=1,
+                                  num_prop_iterations=4):
         """
         Load a Mitsuba scene .xml from disk and render it with BLT.
 
-        scene_path : path to a Mitsuba scene .xml (e.g. samples/cbox/scene.xml).
+        scene_path : a sample NAME ('cbox', 'lamp', 'dragon', 'matpreview') →
+                     samples/<name>/scene.xml, OR a direct path to a scene .xml.
                      Resolution is overridden via resx/resy — exactly like
                      debug/_setup.cornell_scene — so width/height here win over
                      whatever the XML's film declares, keeping BLT renders and
@@ -437,8 +588,12 @@ class Renderer:
         mode: 'ref'    → simple path tracer (render)
               'nonvec' → BLT non-vectorized
               'vec'    → BLT vectorized  (default)
+        techniques: a Technique, a string, or a list — what fills the transport
+              pool: [Technique.CAMERA] (default), [Technique.RAY_TRACING], or
+              both. A camera anchor is always traced regardless.
         """
         mi.set_variant(self.variant)
+        scene_path = _resolve_scene(scene_path)   # accept a sample name OR a path
         # resx/resy override the film resolution when the XML declares them
         # (cbox/scene.xml does, like debug/_setup.cornell_scene). For scenes that
         # don't, fall back to a plain load and adopt the film's own resolution.
@@ -448,18 +603,25 @@ class Renderer:
             scene = mi.load_file(scene_path)
         film = scene.sensors()[0].film()
         width, height = int(film.size().x), int(film.size().y)
+        segment_source = _techniques_to_source(techniques)   # Technique list -> internal mode
         print(f"[render] {scene_path}  {width}x{height}  mode={mode}  "
-              f"iters={n_iterations}  add_light={add_light_samples}")
+              f"iters={n_iterations}  add_light={add_light_samples}  techniques={segment_source}")
         if mode == 'ref':
             image = self.render(scene, width, height, spp=n_iterations)
         elif mode == 'nonvec':
             image = self.render_nonvec(scene, height, width,
                                        n_iterations=n_iterations, beta=beta,
-                                       add_light_samples=add_light_samples)
+                                       add_light_samples=add_light_samples,
+                                       num_prop_iterations=num_prop_iterations,
+                                       segment_source=segment_source,
+                                       rt_segments_per_pixel=rt_segments_per_pixel)
         else:
             image = self.render_vec(scene, height, width,
                                     n_iterations=n_iterations, verbose=False,
-                                    beta=beta, add_light_samples=add_light_samples)
+                                    beta=beta, add_light_samples=add_light_samples,
+                                    num_prop_iterations=num_prop_iterations,
+                                    segment_source=segment_source,
+                                    rt_segments_per_pixel=rt_segments_per_pixel)
         
 
         # plt.imsave(save_file_path, np.clip(image ** (1 / 2.2), 0, 1))

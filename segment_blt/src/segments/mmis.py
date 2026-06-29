@@ -67,12 +67,9 @@ class MMIS:
                 if bridge_sampler is not None:
                     p_sum += bridge_sampler.conditional_pdf(segment, t)
 
-        # Unconditional ray-tracing technique: ONE term per segment (not per
-        # auxiliary) — p_RT(s)=G(s)/(pi|M|), independent of any t.
-        rt = samplers.get(SegmentTechnique.RAY_TRACING)
-        if rt is not None:
-            p_sum += rt.conditional_pdf(segment)
-
+        # RT is counted per-auxiliary in the loop above (an RT auxiliary t
+        # dispatches to RayTracingSampler), exactly like every other technique —
+        # no separate per-segment term.
         return 1.0 / p_sum if p_sum > 0.0 else 0.0
 
     def compute_all_mmis_weights(self, cluster, samplers) -> None:
@@ -97,14 +94,11 @@ class MMIS:
         # trivial segments (camera-origin or light-origin x) get weight 1.0 directly
         p_sum[pair_cache.trivial_mmis] = 1.0   # sentinel: will be inverted to 1.0
 
-        # accumulate conditional PDFs for non-trivial segments
+        # accumulate conditional PDFs for non-trivial segments. RT segments are
+        # counted here too — as auxiliaries (mmis_pdf) — like every other
+        # technique. No separate per-segment p_rt term.
         if len(pair_cache.mmis_j) > 0:
             np.add.at(p_sum, pair_cache.mmis_j, pair_cache.mmis_pdf)
-
-        # Unconditional ray-tracing technique: one term per segment (p_rt[i]=0
-        # for trivial segments, so their pinned 1.0 sentinel is preserved).
-        if getattr(pair_cache, "p_rt", None) is not None and pair_cache.p_rt.size == S:
-            p_sum += pair_cache.p_rt
 
         # invert: w = 1/p_sum (0 where no PDF mass — segment unreachable).
         # Strictly positive test: with guard-symmetric conditional_pdf the
@@ -120,7 +114,35 @@ class MMIS:
                 cap = float(self.mmis_clamp_factor) * np.median(nz_weights)
                 weights = np.minimum(weights, cap)
 
-        # Trivial segments: p_sum was set to 1.0 → inverts to 1.0 
+        # ── RT denominator breakdown (diagnostic; run with RT_DEBUG=1) ─────────
+        # Splits p_sum for RT-technique segments into the per-auxiliary mass (the
+        # existing, uniform path that already counts RT segments as auxiliaries)
+        # vs the explicit once-per-segment p_rt term (the anomaly). If the
+        # explicit term is a big fraction of p_sum, or #aux/seg is tiny, the
+        # per-aux denominator is under-counting -> weights inflated -> too bright.
+        import os
+        if os.environ.get("RT_DEBUG"):
+            from segments.primitives import SegmentTechnique
+            aux_rt = np.zeros(S); aux_cam = np.zeros(S); n_aux = np.zeros(S)
+            if len(pair_cache.mmis_j) > 0:
+                # split per-auxiliary mass by the AUXILIARY's technique
+                t_is_rt = np.array([cluster.segments[int(t)].technique
+                                    == SegmentTechnique.RAY_TRACING for t in pair_cache.mmis_t])
+                np.add.at(aux_rt,  pair_cache.mmis_j[t_is_rt],  pair_cache.mmis_pdf[t_is_rt])
+                np.add.at(aux_cam, pair_cache.mmis_j[~t_is_rt], pair_cache.mmis_pdf[~t_is_rt])
+                np.add.at(n_aux,   pair_cache.mmis_j, 1.0)
+            pr = (pair_cache.p_rt if (getattr(pair_cache, "p_rt", None) is not None
+                                      and pair_cache.p_rt.size == S) else np.zeros(S))
+            rt  = np.array([s.technique == SegmentTechnique.RAY_TRACING
+                            for s in cluster.segments])
+            sel = rt & (p_sum > 0)
+            if sel.any():
+                print(f"[rt-mmis] RT-aux mass={aux_rt[sel].mean():.2e} | "
+                      f"cam-aux mass={aux_cam[sel].mean():.2e} | "
+                      f"explicit_once={pr[sel].mean():.2e} | "
+                      f"#aux/seg={n_aux[sel].mean():.1f} | w={weights[sel].mean():.2e}")
+
+        # Trivial segments: p_sum was set to 1.0 → inverts to 1.0
         for seg_idx, seg in enumerate(cluster.segments):
             seg.mmis_weight = float(weights[seg_idx])
         

@@ -268,7 +268,16 @@ def sample_segment_from_point(scene, point: SurfacePoint, sampler,
         world_dir = frame.to_world(local_dir)
         si_y = scene.ray_intersect(x_si.spawn_ray(world_dir))
         if not si_y.is_valid():
-            continue
+            # x_si.n may face AWAY from the scene interior — twosided BSDFs make
+            # winding unreliable, and the cbox walls literally face outward, so a
+            # cosine ray about +n shoots out of the box. |n·ŝ| is symmetric, so
+            # the opposite hemisphere has the SAME pdf — flip and retry before
+            # discarding this sample (else the walls get no RT segments => brown).
+            local_dir  = mi.Vector3f(local_dir.x, local_dir.y, -local_dir.z)
+            world_dir  = frame.to_world(local_dir)
+            si_y = scene.ray_intersect(x_si.spawn_ray(world_dir))
+            if not si_y.is_valid():
+                continue
 
         y_sp = SurfacePoint.from_intersection(si_y)
         emitter = si_y.emitter(scene)
@@ -296,25 +305,28 @@ def sample_segment_from_point(scene, point: SurfacePoint, sampler,
 
     return None
 
-def sample_surface_point(scene, sampler):
-    """Sample x uniformly by area over all geometry. Returns (SurfacePoint, p_x)
-    with p_x = 1/|M|. Shapes are picked ∝ area; the area-selection and intra-
-    shape 1/area_i pdfs cancel to a flat 1/|M| (Eq. 13's p(x))."""
-    shapes = scene.shapes()
-    areas  = np.array([float(s.surface_area()) for s in shapes])
-    total  = areas.sum()
-    if total <= 0.0:
-        return None
-
-    u   = float(sampler.next_1d()) * total
-    idx = min(int(np.searchsorted(np.cumsum(areas), u)), len(shapes) - 1)
-    _ps = shapes[idx].sample_position(
+def sample_surface_point(scene, sampler, total, shape):
+    """Sample x uniformly by area on `shape` (already picked ∝ area by the
+    caller). Returns (SurfacePoint, p_x) with p_x = 1/|M| = 1/total — the
+    area-pick (area_i/total) and the within-shape 1/area_i density cancel to a
+    flat 1/total (Eq. 13's p(x))."""
+    ps = shape.sample_position(
         0.0, mi.Point2f(sampler.next_1d(), sampler.next_1d()))
-    ps  = _ps[0] if isinstance(_ps, tuple) else _ps   # shape→ps; some builds→(ps, …)
 
-    # Materialise a REAL SI so propagation doesn't get a synthetic SI -> segfault.
-    si = scene.ray_intersect(mi.Ray3f(ps.p + 1e-4 * ps.n, -ps.n))
-    if not si.is_valid():
+    # Re-intersect to materialise a REAL SurfaceInteraction at ps.p (a synthetic
+    # SI segfaults in this build). Offset off the surface and shoot back along
+    # the normal, bracketing ps.p with a tiny maxt so the ray can only hit the
+    # immediate neighbourhood. eps scales with the POINT's coordinate magnitude
+    # (what float precision needs), NOT the shape extent — a big floor must not
+    # inflate eps near the origin where geometry is dense.
+    eps = 1e-4 * max(1.0, float(dr.norm(ps.p)))
+    ray = mi.Ray3f(ps.p + eps * ps.n, -ps.n)
+    ray.maxt = 2.0 * eps
+    si = scene.ray_intersect(ray)
+
+    # Must land back on ps.p. Compare POSITIONS, not `si.shape is shape`:
+    # Mitsuba can hand back a different Python wrapper for the same shape, so an
+    # identity check can reject every sample and silently empty the pool.
+    if not si.is_valid() or float(dr.norm(si.p - ps.p)) > eps:
         return None
-
     return SurfacePoint.from_intersection(si), 1.0 / total

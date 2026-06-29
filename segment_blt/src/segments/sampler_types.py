@@ -277,15 +277,26 @@ class RayTracingSampler(Sampler):
     ones that RT could have produced but which carry no sample_parea.
     |M| = total scene surface area.
 
-    Sample-count note: this single term enters the MMIS denominator once per
-    segment. If RT runs on a different sample-count footing than the
-    per-auxiliary sequential sum, scale by n_RT to match the balance heuristic
-    (West et al. 2022 / supplemental).
+    Counted PER-AUXILIARY in the MMIS denominator (each RT segment that is an
+    auxiliary contributes p_RT), like the sequential/bridge techniques — no
+    separate per-segment term.
+
+    OPEN NORMALIZATION: p_RT = G/(pi|M|) works out to ~ p_seq/|M| for the same
+    geometry — RT samples its vertex over the whole scene (|M|), while the
+    sequential technique places it in the merge kernel, whose 1/|K| cancels the
+    numerator K. That |M| asymmetry is the raytracing-vs-camera energy gap; it
+    must be derived from the kernel convention (Eq. 18), not tuned away.
     """
     technique_type = SegmentTechnique.RAY_TRACING
 
     def __init__(self, scene_area: float):
-        self.inv_pi_M = 1.0 / (math.pi * float(scene_area))
+        self.M = float(scene_area)                  # |M| — area-sample Jacobian 1/p(x)
+        self.inv_pi_M = 1.0 / (math.pi * self.M)
 
     def conditional_pdf(self, segment: Segment, auxiliary: Segment = None) -> float:
-        return float(segment.geom_term) * self.inv_pi_M
+        # LOCAL directional density G/π — the kernel merge cares about the local
+        # density, same footing as the sequential technique (whose kernel
+        # placement 1/|K| cancels). The global x-placement 1/|M| does NOT belong
+        # in the per-bounce operator: it inflates the gain to ρ|M| and compounds
+        # through indirect bounces (white-furnace + cbox prop-iters sweep).
+        return float(segment.geom_term) / math.pi
