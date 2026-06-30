@@ -1,0 +1,61 @@
+<scene version="3.0.0">
+    <!--
+      WHITE FURNACE.  A perfect Lambertian sphere (albedo 1) sitting inside a
+      uniform emitter (L_e = 1). In a uniform radiance field a perfect reflector
+      returns exactly L_e, so the inner sphere is INVISIBLE and the entire image
+      must converge to 1.0 — analytically, independent of geometry, spp, or
+      bounce count. Any deviation is pure estimator bias, which makes this the
+      cleanest normalization check: the target is a known constant.
+
+      Used by segment_blt/debug/white_furnace_test.py to read off the
+      ray-tracing technique's MMIS normalization error.
+    -->
+    <default name="resx" value="128"/>
+    <default name="resy" value="128"/>
+    <default name="outer_r" value="4"/>
+
+    <integrator type="path">
+        <integer name="max_depth" value="7"/>
+    </integrator>
+
+    <sensor type="perspective">
+        <float name="fov" value="45"/>
+        <transform name="to_world">
+            <lookat origin="0, 0, 3.2" target="0, 0, 0" up="0, 1, 0"/>
+        </transform>
+        <film type="hdrfilm">
+            <integer name="width"  value="$resx"/>
+            <integer name="height" value="$resy"/>
+            <string name="pixel_format" value="rgb"/>
+            <rfilter type="box"/>
+        </film>
+        <sampler type="independent">
+            <integer name="sample_count" value="64"/>
+        </sampler>
+    </sensor>
+
+    <!-- Enclosing emitter sphere: inner surface emits L_e = 1 and absorbs
+         (black BSDF), so the interior field is a uniform 1 with no
+         inter-reflection off the enclosure. -->
+    <shape type="sphere">
+        <point name="center" value="0, 0, 0"/>
+        <float name="radius" value="$outer_r"/>
+        <boolean name="flip_normals" value="true"/>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="0, 0, 0"/>
+        </bsdf>
+        <emitter type="area">
+            <rgb name="radiance" value="1, 1, 1"/>
+        </emitter>
+    </shape>
+
+    <!-- Test object: perfect Lambertian (albedo 1), no emission. In the uniform
+         field it must reflect exactly L_e, so its whole surface reads 1.0. -->
+    <shape type="sphere">
+        <point name="center" value="0, 0, 0"/>
+        <float name="radius" value="1"/>
+        <bsdf type="diffuse">
+            <rgb name="reflectance" value="1.0, 1.0, 1.0"/>
+        </bsdf>
+    </shape>
+</scene>

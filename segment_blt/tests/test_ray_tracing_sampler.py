@@ -34,6 +34,13 @@ def _sphere_scene():
                   "bsdf": {"type": "diffuse"}},
     })
 
+def _pick(scene, sampler):
+    """Mirror _add_ray_tracing_segments' shape pick (single-shape sphere here)."""
+    shapes = scene.shapes()
+    total = float(sum(float(s.surface_area()) for s in shapes))
+    return sample_surface_point(scene, sampler, total, shapes[0])
+
+
 def _draw(n):
     scene = _sphere_scene()
     sampler = mi.load_dict({"type": "independent"})
@@ -42,7 +49,7 @@ def _draw(n):
     tries = 0
     while len(lengths) < n and tries < n * 50:
         tries += 1
-        res = sample_surface_point(scene, sampler)
+        res = _pick(scene, sampler)
         if res is None:
             continue
         point, p_x = res                                    # (SurfacePoint, 1/|M|)
@@ -85,7 +92,7 @@ def test_p_x_is_inverse_total_area():
     """sample_surface_point's p(x) must equal 1/|M| = 1/(4 pi R^2) for the sphere."""
     scene = _sphere_scene()
     sampler = mi.load_dict({"type": "independent"}); sampler.seed(0, 64)
-    res = sample_surface_point(scene, sampler)
+    res = _pick(scene, sampler)
     assert res is not None
     _, p_x = res
     assert abs(p_x - 1.0 / (4 * math.pi * R * R)) < 1e-4

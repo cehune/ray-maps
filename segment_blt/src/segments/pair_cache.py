@@ -40,6 +40,10 @@ class PairCache:
     # unconditional ray-tracing technique: one pdf term per segment, p_RT(s)=G(s)/(pi|M|)
     p_rt: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
+    # per-segment merge-weight scale: |M| (area-sample Jacobian 1/p(x)) for RT
+    # segments, 1.0 otherwise. Confirmed by the white-furnace |M| sweep.
+    rt_scale: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+
     # segments whose MMIS weight is trivially 1.0 (x.is_camera or x.is_light)
     trivial_mmis: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
 
@@ -274,16 +278,11 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
             p += bridge_sampler.conditional_pdf(seg_j, seg_t)
         mmis_pdf[k] = p
 
-    # Unconditional ray-tracing technique: ONE pdf term per segment (not per
-    # pair). p_RT(s)=G(s)/(pi|M|) from geometry, defined for every segment.
-    # Trivial segments stay pinned to weight 1 (p_rt = 0 there).
-    rt = samplers.get(SegmentTechnique.RAY_TRACING)
-    p_rt = np.zeros(S, dtype=np.float64)
-    if rt is not None:
-        for i in range(S):
-            if i not in trivial_set:
-                p_rt[i] = rt.conditional_pdf(segs[i])
-
+    # RT is counted per-auxiliary inside mmis_pdf above (an RT auxiliary
+    # dispatches to RayTracingSampler), identical to every other technique. Its
+    # pdf is the LOCAL directional density G/π — the global 1/|M| does NOT belong
+    # in the per-bounce merge operator (it inflated the gain and compounded
+    # through indirect bounces; see the cbox prop-iters sweep).
     return PairCache(
         prop_i=prop_i_arr,
         prop_j=prop_j_arr,
@@ -291,7 +290,6 @@ def build_pair_cache(cluster, samplers, merge_min_len_factor: float | None = 1.0
         mmis_j=mmis_j_arr,
         mmis_t=mmis_t_arr,
         mmis_pdf=mmis_pdf,
-        p_rt=p_rt,
         trivial_mmis=np.array(sorted(trivial_set), dtype=np.int32),
         cls_i=np.array(cls_i_list, dtype=np.int32) if cls_i_list else np.empty(0, np.int32),
         cls_j=np.array(cls_j_list, dtype=np.int32) if cls_j_list else np.empty(0, np.int32),

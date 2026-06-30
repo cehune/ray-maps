@@ -23,9 +23,7 @@ class BasicPathTracer(mi.SamplingIntegrator):
     def sample(self,
                scene:   mi.Scene,
                sampler: mi.Sampler,
-               ray:     mi.RayDifferential3f,
-               medium:  mi.Medium = None,
-               active:  bool = True) -> tuple:
+               ray:     mi.RayDifferential3f):
 
         bsdf_ctx = mi.BSDFContext()
 
@@ -64,9 +62,10 @@ class BasicPathTracer(mi.SamplingIntegrator):
 
             # NEE, skipped for specular BSDFs. The "nee" slot stays reserved
             # whether or not we draw it, so the BSDF sample below is unaffected.
+            nee = (sampler.bounce_2d(depth, "nee"))
             if mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth):
                 ds, em_weight = scene.sample_emitter_direction(
-                    si, mi.Point2f(*sampler.bounce_2d(depth, "nee")), True)
+                    si, mi.Point2f(*nee), True)
 
                 if ds.pdf > 0.0:
                     wo_local = si.to_local(ds.d)
